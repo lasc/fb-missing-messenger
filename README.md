@@ -17,7 +17,6 @@ A native wrapper for Messenger and Facebook Marketplace , built for macOS.
     - Native Notifications for messages.
     - Dock badging for unread counts.
     - Dock bouncing (throttled) for new alerts.
-    - "About" panel integration.
 
 ## Tech Stack
 

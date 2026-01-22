@@ -1,5 +1,7 @@
 # FB Missing Messenger
 
+![FB Missing Messenger Showcase](./resources/screenshots/showcase.jpg)
+
 A native wrapper for Messenger and Facebook Marketplace , built for macOS.
 
 ## Features

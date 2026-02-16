@@ -1,8 +1,6 @@
 import { ipcRenderer } from 'electron'
 
 // Override Notification API
-const NativeNotification = window.Notification
-
 // @ts-ignore
 window.Notification = class extends EventTarget {
   static requestPermission(callback?: (permission: NotificationPermission) => void) {
@@ -16,7 +14,6 @@ window.Notification = class extends EventTarget {
 
   constructor(title: string, options?: NotificationOptions) {
     super()
-    console.log('DYAD: Notification Intercepted:', title, options)
     
     // Send to host page (App.tsx)
     ipcRenderer.sendToHost('webview-notification', {
@@ -43,7 +40,6 @@ const updateUnreadCount = () => {
   const count = match ? parseInt(match[1], 10) : 0
   
   if (count !== lastUnreadCount) {
-    console.log('DYAD: Unread count changed:', count, 'Title:', title)
     lastUnreadCount = count
     ipcRenderer.sendToHost('unread-count', count)
   }
@@ -54,21 +50,13 @@ const titleObserver = new MutationObserver(updateUnreadCount)
 const titleElement = document.querySelector('title')
 if (titleElement) {
   titleObserver.observe(titleElement, { childList: true, characterData: true, subtree: true })
-  console.log('DYAD: Title observer attached')
 } else {
   // Fallback if title element is not yet available
-  console.log('DYAD: Title element not found, using interval fallback')
   setInterval(updateUnreadCount, 2000)
 }
 
-console.log('DYAD: Webview notification & unread tracking version 2.0')
-
 // UI Cleanup for Non-Messenger Pages (Marketplace, generic FB)
-// We check for messenger.com to skip this logic there.
-// We DO NOT check for specific 'facebook.com' hostnames because redirects/local versions might vary.
 if (!window.location.hostname.includes('messenger.com')) {
-  console.log('DYAD: Enable aggressive UI cleanup (MutationObserver)')
-
   // 1. Static CSS Injection (Immediate visual hide)
   const hideCSS = `
     [role="complementary"], 
@@ -96,10 +84,9 @@ if (!window.location.hostname.includes('messenger.com')) {
   }
 
   // 2. DOM Removal Helper
-  const removeElement = (el: Element, reason: string) => {
-      console.log(`DYAD: Removing element (${reason}):`, el)
+  const removeElement = (el: Element) => {
       if (el instanceof HTMLElement) {
-          el.style.display = 'none' // Hide immediately before removal
+          el.style.display = 'none'
       }
       el.remove()
   }
@@ -116,9 +103,8 @@ if (!window.location.hostname.includes('messenger.com')) {
           if (role === 'main' || role === 'navigation' || role === 'banner') return
 
           // Heuristic 1: Text Content (Marketplace Assistant)
-          // We look for small floating divs, not large containers, to avoid killing the page
           if (el.innerText && el.innerText.includes('Marketplace Assistant')) {
-              removeElement(el, 'Text: Marketplace Assistant')
+              removeElement(el)
               return
           }
 
@@ -129,20 +115,20 @@ if (!window.location.hostname.includes('messenger.com')) {
               label === 'Chats' || 
               label === 'New message'
           )) {
-              removeElement(el, `Aria: ${label}`)
+              removeElement(el)
               return
           }
 
           // Heuristic 3: Role Complementary (often the chat sidebar)
           if (role === 'complementary') {
-              removeElement(el, 'Role: complementary')
+              removeElement(el)
               return
           }
 
           // Heuristic 4: Specific Data Pagelets (Chat Tabs)
           const pagelet = el.getAttribute('data-pagelet')
           if (pagelet === 'ChatTab' || pagelet === 'Dock') {
-              removeElement(el, `Data-Pagelet: ${pagelet}`)
+              removeElement(el)
               return
           }
         }
@@ -160,93 +146,82 @@ if (!window.location.hostname.includes('messenger.com')) {
   }
 
   // 4. "Scorched Earth" Interval Check (Geometric & Content)
-  // Sometimes MutationObserver misses things or they are pre-rendered.
   setInterval(() => {
       // A. Look for "Close chat" buttons and kill their container
       const closeButtons = document.querySelectorAll('[aria-label="Close chat"], [aria-label="Minimize chat"]')
       closeButtons.forEach(btn => {
-          // Find the floating container (usually a few levels up)
           const container = btn.closest('[role="dialog"]') || btn.closest('[role="region"]') || btn.closest('.fbNub') || btn.closest('div[style*="position: fixed"]')
-          if (container) removeElement(container, 'Interval: Close Button Found')
+          if (container) removeElement(container)
       })
 
-      // B. Geometric + Computed Style Scan (The Nuclear Option)
-      // We iterate ALL divs to find anything fixed in the bottom right.
-      // Optimisation: use getElementsByTagName which is faster than querySelectorAll for live collections
-      const allDivs = document.getElementsByTagName('div') as HTMLCollectionOf<HTMLElement>
+      // B. Geometric + Computed Style Scan
+      const allDivs = document.getElementsByTagName('div')
+      const winHeight = window.innerHeight
+      const winWidth = window.innerWidth
       
-      // We limit check to invalidating persistent floaters
       for (let i = 0; i < allDivs.length; i++) {
-        const el = allDivs[i]
+        const el = allDivs[i] as HTMLElement
         
-        // Quick visual checks before expensive computed style
-        if (el.style.display === 'none') continue
+        if (el.style.display === 'none' || el.childElementCount === 0) continue
         
-        // Check geometry first (cheap)
         const rect = el.getBoundingClientRect()
-        // Must be in bottom-right quadrant
-        if (rect.bottom < window.innerHeight - 300 || rect.right < window.innerWidth - 450) continue
-        
-        // Must be small enough (not the entire page wrapper)
+        if (rect.bottom < winHeight - 300 || rect.right < winWidth - 450) continue
         if (rect.width > 500 || rect.height > 600) continue
-        if (rect.width < 50 || rect.height < 50) continue // Too small (icon?)
+        if (rect.width < 50 || rect.height < 50) continue
 
-        // Check if it's fixed position (expensive)
         const style = window.getComputedStyle(el)
         if (style.position === 'fixed' || style.position === 'sticky') {
-            // Check z-index to ensure it's on top? Not strictly necessary but implies overlay.
-             
-             // Content Heuristics to confirm it's a chat
-             // - Has an input?
-             // - Has typical chat keywords in text?
-             // - Close button inside?
              const hasInput = el.querySelector('input, textarea, [contenteditable="true"]')
              const hasClose = el.querySelector('[aria-label*="Close"], [aria-label*="Minimize"]')
              
              if (hasInput || hasClose || el.innerText.length > 0) {
-                 // Final safety: ensure it's not a banner/navigation
                  const role = el.getAttribute('role') || ''
                  if (role !== 'banner' && role !== 'navigation') {
-                     removeElement(el, 'Nuclear Scan: Fixed/Sticky Bottom-Right Element')
+                     removeElement(el)
                  }
              }
         }
       }
-  }, 1000)
+  }, 3000)
 }
 
-// 5. Global Link Interceptor (Rescue "View listing" clicks)
+// 5. Global Link Interceptor - Handle all link clicks
 document.addEventListener('click', (e) => {
   const target = e.target as HTMLElement
   
-  // Check if we clicked "View listing" or similar call to action
-  // We check the target and its parents
-  const btn = target.closest('[role="button"], a, button')
-  if (btn) {
-      const text = (btn as HTMLElement).innerText || ''
-      
-      // Check for specific "View listing" text
-      if (text.includes('View listing') || text.includes('View item')) {
-          console.log('DYAD: Clicked "View listing" button:', btn)
-          
-          // Try to find a URL
-          let url = (btn as HTMLAnchorElement).href
-          
-          // If no href, look for a nested or parent anchor
-          if (!url) {
-            const anchor = btn.closest('a') || btn.querySelector('a')
-            if (anchor) url = anchor.href
-          }
-
-          // If still no URL, we might need to parse it from attributes or just let it fail naturally
-          // But often these are <a> tags styled as buttons
-          if (url) {
-             console.log('DYAD: Intercepted explicit navigation to:', url)
-             e.preventDefault()
-             e.stopPropagation()
-             ipcRenderer.sendToHost('open-link', url)
-          }
-      }
+  // Find the closest anchor element
+  const anchor = target.closest('a') as HTMLAnchorElement
+  if (!anchor || !anchor.href) return
+  
+  const url = anchor.href
+  const lowerUrl = url.toLowerCase()
+  
+  // Skip javascript: and # links
+  if (url.startsWith('javascript:') || url.startsWith('#') || url === '') return
+  
+  // Handle marketplace item links - open in app
+  if (lowerUrl.includes('/marketplace/item/') ||
+      lowerUrl.includes('/marketplace/listing/') ||
+      lowerUrl.includes('marketplace_item_id') ||
+      lowerUrl.includes('referral_code=marketplace')) {
+      e.preventDefault()
+      e.stopPropagation()
+      ipcRenderer.sendToHost('open-link', url)
+      return
   }
-}, true) // Capture phase to ensure we get it first
-
+  
+  // Allow Facebook/Messenger internal navigation
+  if (lowerUrl.includes('facebook.com') || 
+      lowerUrl.includes('messenger.com') || 
+      lowerUrl.includes('fb.com') ||
+      lowerUrl.includes('fbcdn.net')) {
+      return // Let normal navigation happen
+  }
+  
+  // All other external links - open in default browser
+  if (url.startsWith('http://') || url.startsWith('https://')) {
+      e.preventDefault()
+      e.stopPropagation()
+      ipcRenderer.sendToHost('open-external', url)
+  }
+}, true)

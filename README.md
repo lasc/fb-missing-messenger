@@ -2,7 +2,7 @@
 
 ![FB Missing Messenger Showcase](./resources/screenshots/showcase.jpg)
 
-A native wrapper for Messenger and Facebook Marketplace , built for macOS.
+A native wrapper for Messenger and Facebook Marketplace, built for macOS.
 
 ## Features
 
@@ -50,4 +50,4 @@ npm run dist
 
 ## License
 
-ISC © 2026 Eugeny Perepelyatnikov
+LGPL-3.0-or-later © 2026 Eugeny Perepelyatnikov

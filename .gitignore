@@ -2,8 +2,9 @@ node_modules
 dist
 out
 .DS_Store
+**/.DS_Store
 .idea
 *.log
+*.tgz
 .env
 .agent/
-

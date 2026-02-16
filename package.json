@@ -1,7 +1,7 @@
 {
   "name": "fb-missing-messenger",
   "productName": "FB Missing Messenger",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "A native wrapper for Messenger and Facebook with power features",
   "main": "out/main/index.js",
   "scripts": {
@@ -34,6 +34,8 @@
   "build": {
     "appId": "com.evame.fbmissingmessenger",
     "productName": "FB Missing Messenger",
+    "compression": "maximum",
+    "asar": true,
     "mac": {
       "icon": "resources/icon.png",
       "category": "public.app-category.social-networking"

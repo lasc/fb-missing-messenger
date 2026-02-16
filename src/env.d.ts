@@ -1,7 +1,6 @@
 /// <reference types="vite/client" />
 /// <reference types="electron" />
 
-
 declare global {
   interface Window {
     electron: {

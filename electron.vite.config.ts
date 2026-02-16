@@ -4,15 +4,23 @@ import { resolve } from 'path'
 
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin()]
+    plugins: [externalizeDepsPlugin()],
+    build: {
+      minify: 'esbuild',
+      rollupOptions: {
+        treeshake: true
+      }
+    }
   },
   preload: {
     build: {
+      minify: 'esbuild',
       rollupOptions: {
         input: {
           index: resolve(__dirname, 'src/preload/index.ts'),
           'webview-preload': resolve(__dirname, 'src/preload/webview-preload.ts')
-        }
+        },
+        treeshake: true
       }
     },
     plugins: [externalizeDepsPlugin()]
@@ -23,6 +31,12 @@ export default defineConfig({
         '@renderer': resolve('src/renderer/src')
       }
     },
-    plugins: [react()]
+    plugins: [react()],
+    build: {
+      minify: 'esbuild',
+      rollupOptions: {
+        treeshake: true
+      }
+    }
   }
 })

@@ -8,16 +8,48 @@ interface Tab {
     url: string
     title?: string
     icon?: string
+    hasBeenVisited?: boolean
+    lastVisited?: number
 }
 
+const MAX_PRUNABLE_TABS = 5
+
 function App(): React.ReactElement {
-    const [tabs, setTabs] = useState<Tab[]>([
-        { id: 'messenger', type: 'messenger', url: 'https://www.messenger.com/', icon: '💬' },
-        { id: 'marketplace', type: 'marketplace', url: 'https://www.facebook.com/marketplace/', icon: '🏪' },
-        { id: 'saved', type: 'saved', url: 'https://www.facebook.com/saved/', icon: '🔖' }
-    ])
+    const [tabs, setTabs] = useState<Tab[]>(() => {
+        const initialTabs: Tab[] = [
+            { id: 'messenger', type: 'messenger', url: 'https://www.messenger.com/', icon: '💬' },
+            { id: 'marketplace', type: 'marketplace', url: 'https://www.facebook.com/marketplace/', icon: '🏪' },
+            { id: 'saved', type: 'saved', url: 'https://www.facebook.com/saved/', icon: '🔖' }
+        ]
+        // Mark the initially active tab as visited
+        return initialTabs.map(t => t.id === 'messenger' ? { ...t, hasBeenVisited: true, lastVisited: Date.now() } : t)
+    })
     const [activeTabId, setActiveTabId] = useState<string>('messenger')
     const [webviewPreloadPath, setWebviewPreloadPath] = useState<string>('')
+
+    // Update visited state and timestamp when switching tabs
+    const handleTabSwitch = (id: string) => {
+        setActiveTabId(id)
+        setTabs(prev => prev.map(t =>
+            t.id === id ? { ...t, hasBeenVisited: true, lastVisited: Date.now() } : t
+        ))
+    }
+
+    // Tab Pruning Logic: Keep only N most recently visited marketplace items
+    useEffect(() => {
+        const marketplaceItems = tabs.filter(t => t.type === 'marketplace-item' && t.hasBeenVisited)
+        if (marketplaceItems.length > MAX_PRUNABLE_TABS) {
+            const sorted = [...marketplaceItems].sort((a, b) => (a.lastVisited || 0) - (b.lastVisited || 0))
+            const tabsToPrune = sorted.slice(0, marketplaceItems.length - MAX_PRUNABLE_TABS)
+            const pruneIds = new Set(tabsToPrune.map(t => t.id).filter(id => id !== activeTabId))
+
+            if (pruneIds.size > 0) {
+                setTabs(prev => prev.map(t =>
+                    pruneIds.has(t.id) ? { ...t, hasBeenVisited: false } : t
+                ))
+            }
+        }
+    }, [activeTabId, tabs.length])
 
     // Unread count aggregation
     const unreadCountsRef = React.useRef<{ [tabId: string]: number }>({})
@@ -28,16 +60,13 @@ function App(): React.ReactElement {
 
         debounceTimerRef.current = setTimeout(() => {
             const total = Object.values(unreadCountsRef.current).reduce((sum, count) => sum + count, 0)
-            console.log('DYAD: Aggregated unread count:', total, unreadCountsRef.current)
             window.electron.ipcRenderer.send('unread-count', total)
-        }, 500) // 500ms debounce to filter title blinking
+        }, 500)
     }
 
     // Fetch webview preload path
     useEffect(() => {
         window.electron.ipcRenderer.invoke('get-webview-preload-path').then(path => {
-            console.log('DYAD: Webview preload path received:', path)
-            // Convert to file:// URL if it's an absolute path
             const fileUrl = path.startsWith('/') ? `file://${path}` : path
             setWebviewPreloadPath(fileUrl)
         })
@@ -48,15 +77,11 @@ function App(): React.ReactElement {
 
     // Function to open new marketplace item
     const openMarketplaceItem = (url: string) => {
-        // basic normalization to avoid duplicates
         const cleanUrl = url.replace(/\/$/, '')
-
-        // Check if tab already exists
         const existingTab = tabs.find(t => t.url.replace(/\/$/, '') === cleanUrl)
 
         if (existingTab) {
-            console.log('DYAD: Tab already exists, switching to:', existingTab.id)
-            setActiveTabId(existingTab.id)
+            handleTabSwitch(existingTab.id)
             return
         }
 
@@ -65,7 +90,9 @@ function App(): React.ReactElement {
             id,
             type: 'marketplace-item',
             url,
-            icon: '📦' // New Package Icon
+            icon: '📦',
+            hasBeenVisited: true,
+            lastVisited: Date.now()
         }])
         setActiveTabId(id)
     }
@@ -74,14 +101,16 @@ function App(): React.ReactElement {
     const closeTab = (e: React.MouseEvent, id: string) => {
         e.stopPropagation()
         setTabs(prev => prev.filter(t => t.id !== id))
+        delete unreadCountsRef.current[id]
+        updateAggregatedUnreadCount()
+
         if (activeTabId === id) {
-            setActiveTabId('messenger')
+            handleTabSwitch('messenger')
         }
     }
 
-    // Base CSS to hide Chat Bubbles and Floating elements that might appear on any FB property
+    // Base CSS to hide Chat Bubbles and Floating elements
     const baseHideCSS = `
-        /* Floating Chat Heads / Bubbles / Bottom Right Containers */
         div.mw227v9j span, 
         div[class*="x1n2onr6"][style*="bottom"][style*="right"],
         div[style*="position: fixed"][style*="bottom"][style*="right"],
@@ -98,15 +127,13 @@ function App(): React.ReactElement {
         }
     `
 
-    // Aggressive CSS for Non-Messenger tabs (Marketplace, Saved) to hide the main FB Chrome
+    // Aggressive CSS for Non-Messenger tabs
     const facebookChromeCSS = `
         .fbDockWrapper, .fbDock, .fbNub, 
-        /* Top Navigation Bar / Banner */
         [role="banner"],
         div[role="banner"],
         div[data-pagelet="BlueBar"],
         nav[role="navigation"],
-        /* Bottom Right Floating Buttons (Messenger & Create) */
         [aria-label="New message"], 
         [aria-label="New Message"],
         [aria-label="Compose message"],
@@ -126,10 +153,8 @@ function App(): React.ReactElement {
         div.mw227v9j,
         div.fbDockWrapper,
         div.fbDock,
-        /* Generic floating containers at bottom right */
         div[style*="position: fixed"][style*="bottom: 0"][style*="right: 0"],
         div[class*="x1n2onr6"][style*="right: 0px"],
-        /* Sidebar Navigation often present on Marketplace */
         div[role="navigation"].x9f619
         { 
             display: none !important; 
@@ -147,17 +172,10 @@ function App(): React.ReactElement {
             const el = webviewRefs.current[tab.id]
             if (!el) return
 
-
-            // 2. New Window Handling (Marketplace Interception & Custom Protocols & External Links)
             const handleNewWindow = (e: any) => {
                 const url = e.url
-                console.log('DYAD: New Window Requested:', url)
                 e.preventDefault()
 
-
-
-                // Open marketplace items in a new tab within the app
-                // Broadened check for various marketplace URL formats
                 const lowerUrl = url.toLowerCase()
                 if (lowerUrl.includes('/marketplace/item/') ||
                     lowerUrl.includes('/item/') ||
@@ -168,7 +186,6 @@ function App(): React.ReactElement {
                     return
                 }
 
-                // Open all other external links in the default browser
                 if (url && (url.startsWith('http://') || url.startsWith('https://'))) {
                     window.electron.ipcRenderer.send('open-external-url', url)
                 }
@@ -176,13 +193,10 @@ function App(): React.ReactElement {
             el.removeEventListener('new-window', handleNewWindow)
             el.addEventListener('new-window', handleNewWindow)
 
-            // 3. Handle navigation to external links - open in default browser
             const handleWillNavigate = (e: any) => {
                 const url = e.url
-                console.log('DYAD: Will Navigate:', url)
                 if (!url) return
 
-                // Check for marketplace items even during navigation
                 const lowerUrl = url.toLowerCase()
                 if (lowerUrl.includes('/marketplace/item/') ||
                     lowerUrl.includes('/item/') ||
@@ -193,12 +207,10 @@ function App(): React.ReactElement {
                     return
                 }
 
-                // Allow navigation within Facebook/Messenger domains for other things (like switching chats)
                 if (url.includes('facebook.com') || url.includes('messenger.com') || url.includes('fb.com')) {
-                    return // Allow normal navigation
+                    return
                 }
 
-                // Open external links in default browser
                 if (url.startsWith('http://') || url.startsWith('https://')) {
                     e.preventDefault()
                     window.electron.ipcRenderer.send('open-external-url', url)
@@ -207,21 +219,13 @@ function App(): React.ReactElement {
             el.removeEventListener('will-navigate', handleWillNavigate)
             el.addEventListener('will-navigate', handleWillNavigate)
 
-            // 4. DOM Ready Handler - Inject CSS and cleanup scripts
             const handleDomReady = () => {
-                console.log('DOM Ready for tab:', tab.id, tab.type)
-
-                // Inject base hiding CSS for ALL tabs to be safe
                 try {
                     el.insertCSS(baseHideCSS);
-                } catch (e) {
-                    console.error('Base CSS injection failed:', e);
-                }
+                } catch (e) { }
 
-                // If non-messenger, inject additional chrome-hiding CSS
                 if (tab.type !== 'messenger') {
                     try {
-                        // Also inject cover overlay for header via script (Preload handles the rest)
                         const coverScript = `
                             (function() {
                                 var cover = document.getElementById('dyad-header-cover');
@@ -234,24 +238,14 @@ function App(): React.ReactElement {
                             })();
                         `;
                         el.executeJavaScript(coverScript);
-                    } catch (e) {
-                        console.error('Chrome CSS injection failed:', e);
-                    }
+                    } catch (e) { }
                 }
             }
 
-            // Remove previous listener to avoid duplicates
             el.removeEventListener('dom-ready', handleDomReady)
             el.addEventListener('dom-ready', handleDomReady)
 
-            // Also attach console message listener
-            el.addEventListener('console-message', (e: any) => {
-                console.log(`[${tab.id}]:`, e.message)
-            })
-
-            // Handle IPC notifications from webview
             const handleIpcMessage = (e: any) => {
-                console.log('DYAD: IPC Message from webview:', e.channel, e.args)
                 if (e.channel === 'webview-notification') {
                     const { title, options } = e.args[0]
                     window.electron.ipcRenderer.send('show-notification', {
@@ -264,7 +258,6 @@ function App(): React.ReactElement {
                     updateAggregatedUnreadCount()
                 } else if (e.channel === 'open-link') {
                     const url = e.args[0]
-                    console.log('DYAD: Explicit open-link requested:', url)
                     if (url) {
                         const lower = url.toLowerCase()
                         if (lower.includes('marketplace') || lower.includes('/item/')) {
@@ -273,14 +266,18 @@ function App(): React.ReactElement {
                             window.electron.ipcRenderer.send('open-external-url', url)
                         }
                     }
+                } else if (e.channel === 'open-external') {
+                    const url = e.args[0]
+                    if (url) {
+                        window.electron.ipcRenderer.send('open-external-url', url)
+                    }
                 }
             }
+
             el.removeEventListener('ipc-message', handleIpcMessage)
             el.addEventListener('ipc-message', handleIpcMessage)
         })
     }, [tabs, webviewPreloadPath])
-
-
 
     // Automated Unsave Injection for Saved Tab
     useEffect(() => {
@@ -402,16 +399,13 @@ function App(): React.ReactElement {
         }
     }, [activeTabId, webviewRefs.current['saved']])
 
-
-
-
     return (
         <div className="app-container">
             <aside className="sidebar">
                 <div className="sidebar-drag-region"></div>
                 <nav>
                     {/* Persistent Back Button Area */}
-                    <div className="nav-item-wrapper" style={{ display: 'flex', justifyContent: 'center', width: '100%' }}>
+                    <div className="nav-item-wrapper">
                         <button
                             className="nav-btn"
                             onClick={() => {
@@ -428,10 +422,10 @@ function App(): React.ReactElement {
                     </div>
 
                     {tabs.map(tab => (
-                        <div key={tab.id} className="nav-item-wrapper" style={{ position: 'relative', width: '100%', display: 'flex', justifyContent: 'center' }}>
+                        <div key={tab.id} className="nav-item-wrapper">
                             <button
                                 className={`nav-btn ${activeTabId === tab.id ? 'active' : ''}`}
-                                onClick={() => setActiveTabId(tab.id)}
+                                onClick={() => handleTabSwitch(tab.id)}
                                 title={tab.type}
                             >
                                 {tab.icon}
@@ -440,13 +434,7 @@ function App(): React.ReactElement {
                                 <div
                                     className="close-btn"
                                     onClick={(e) => closeTab(e, tab.id)}
-                                    style={{
-                                        position: 'absolute', top: -5, right: 5,
-                                        cursor: 'pointer', background: 'red', borderRadius: '50%',
-                                        width: 12, height: 12, fontSize: 8, display: 'flex',
-                                        alignItems: 'center', justifyContent: 'center', color: 'white'
-                                    }}
-                                >x</div>
+                                >×</div>
                             )}
                         </div>
                     ))}
@@ -461,19 +449,22 @@ function App(): React.ReactElement {
                     </div>
                 ) : (
                     tabs.map(tab => (
-                        <webview
-                            key={tab.id}
-                            ref={el => { webviewRefs.current[tab.id] = el }}
-                            src={tab.url}
-                            className={`webview ${activeTabId === tab.id ? 'visible' : 'hidden'}`}
-                            useragent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                            allowpopups={true}
-                            preload={webviewPreloadPath}
-                        ></webview>
+                        tab.hasBeenVisited && (
+                            <webview
+                                key={tab.id}
+                                ref={el => { webviewRefs.current[tab.id] = el }}
+                                src={tab.url}
+                                className={`webview ${activeTabId === tab.id ? 'visible' : 'hidden'}`}
+                                useragent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                                allowpopups={true}
+                                preload={webviewPreloadPath}
+                            ></webview>
+
+                        )
                     ))
                 )}
             </main>
-        </div >
+        </div>
     )
 }
 

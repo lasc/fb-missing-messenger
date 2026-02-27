@@ -35,18 +35,22 @@ function App(): React.ReactElement {
         ))
     }
 
+    // Keep tabsRef in sync so event handlers always see latest tabs
+    const tabsRef = React.useRef(tabs)
+    useEffect(() => { tabsRef.current = tabs }, [tabs])
+
     // Tab Pruning Logic: Keep only N most recently visited marketplace items
     useEffect(() => {
-        const marketplaceItems = tabs.filter(t => t.type === 'marketplace-item' && t.hasBeenVisited)
+        const marketplaceItems = tabs.filter(t => t.type === 'marketplace-item')
         if (marketplaceItems.length > MAX_PRUNABLE_TABS) {
             const sorted = [...marketplaceItems].sort((a, b) => (a.lastVisited || 0) - (b.lastVisited || 0))
             const tabsToPrune = sorted.slice(0, marketplaceItems.length - MAX_PRUNABLE_TABS)
             const pruneIds = new Set(tabsToPrune.map(t => t.id).filter(id => id !== activeTabId))
 
             if (pruneIds.size > 0) {
-                setTabs(prev => prev.map(t =>
-                    pruneIds.has(t.id) ? { ...t, hasBeenVisited: false } : t
-                ))
+                pruneIds.forEach(id => delete unreadCountsRef.current[id])
+                updateAggregatedUnreadCount()
+                setTabs(prev => prev.filter(t => !pruneIds.has(t.id)))
             }
         }
     }, [activeTabId, tabs.length])
@@ -54,14 +58,26 @@ function App(): React.ReactElement {
     // Unread count aggregation
     const unreadCountsRef = React.useRef<{ [tabId: string]: number }>({})
     const debounceTimerRef = React.useRef<NodeJS.Timeout | null>(null)
+    const lastSentCountRef = React.useRef<number>(0)
 
     const updateAggregatedUnreadCount = () => {
         if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current)
 
-        debounceTimerRef.current = setTimeout(() => {
-            const total = Object.values(unreadCountsRef.current).reduce((sum, count) => sum + count, 0)
+        const total = Object.values(unreadCountsRef.current).reduce((sum, count) => sum + count, 0)
+
+        if (total > lastSentCountRef.current) {
+            // Increase: send immediately so badge appears without delay
+            lastSentCountRef.current = total
             window.electron.ipcRenderer.send('unread-count', total)
-        }, 500)
+        } else if (total < lastSentCountRef.current) {
+            // Decrease: debounce with longer timeout to avoid flicker
+            // (Facebook briefly resets the title during re-renders)
+            debounceTimerRef.current = setTimeout(() => {
+                const finalTotal = Object.values(unreadCountsRef.current).reduce((sum, count) => sum + count, 0)
+                lastSentCountRef.current = finalTotal
+                window.electron.ipcRenderer.send('unread-count', finalTotal)
+            }, 2000)
+        }
     }
 
     // Fetch webview preload path
@@ -75,26 +91,34 @@ function App(): React.ReactElement {
     // Refs for webviews (using a map)
     const webviewRefs = React.useRef<{ [key: string]: any }>({})
 
-    // Function to open new marketplace item
+    // Refs for event handlers so removeEventListener works with the exact same reference
+    const handlersRef = React.useRef<Map<string, { newWindow: any; willNavigate: any; domReady: any; ipcMessage: any }>>(new Map())
+
+    // Function to open new marketplace item — uses functional setTabs for atomic dedup
     const openMarketplaceItem = (url: string) => {
         const cleanUrl = url.replace(/\/$/, '')
-        const existingTab = tabs.find(t => t.url.replace(/\/$/, '') === cleanUrl)
-
-        if (existingTab) {
-            handleTabSwitch(existingTab.id)
-            return
-        }
-
-        const id = `item-${Date.now()}`
-        setTabs(prev => [...prev, {
-            id,
-            type: 'marketplace-item',
-            url,
-            icon: '📦',
-            hasBeenVisited: true,
-            lastVisited: Date.now()
-        }])
-        setActiveTabId(id)
+        setTabs(prev => {
+            const existing = prev.find(t => t.url.replace(/\/$/, '') === cleanUrl)
+            if (existing) {
+                // Tab already exists — just switch to it
+                setActiveTabId(existing.id)
+                return prev.map(t =>
+                    t.id === existing.id
+                        ? { ...t, hasBeenVisited: true, lastVisited: Date.now() }
+                        : t
+                )
+            }
+            const id = `item-${Date.now()}`
+            setActiveTabId(id)
+            return [...prev, {
+                id,
+                type: 'marketplace-item' as TabType,
+                url,
+                icon: '📦',
+                hasBeenVisited: true,
+                lastVisited: Date.now()
+            }]
+        })
     }
 
     // Function to close tab
@@ -166,11 +190,20 @@ function App(): React.ReactElement {
         }
     `
 
-    // Attach events manually for all webviews
+    // Attach events manually for all webviews — uses stored handler refs for proper cleanup
     useEffect(() => {
         tabs.forEach(tab => {
             const el = webviewRefs.current[tab.id]
             if (!el) return
+
+            // Remove old handlers using stored refs (same reference = actually removes)
+            const oldHandlers = handlersRef.current.get(tab.id)
+            if (oldHandlers) {
+                el.removeEventListener('new-window', oldHandlers.newWindow)
+                el.removeEventListener('will-navigate', oldHandlers.willNavigate)
+                el.removeEventListener('dom-ready', oldHandlers.domReady)
+                el.removeEventListener('ipc-message', oldHandlers.ipcMessage)
+            }
 
             const handleNewWindow = (e: any) => {
                 const url = e.url
@@ -190,8 +223,6 @@ function App(): React.ReactElement {
                     window.electron.ipcRenderer.send('open-external-url', url)
                 }
             }
-            el.removeEventListener('new-window', handleNewWindow)
-            el.addEventListener('new-window', handleNewWindow)
 
             const handleWillNavigate = (e: any) => {
                 const url = e.url
@@ -216,8 +247,6 @@ function App(): React.ReactElement {
                     window.electron.ipcRenderer.send('open-external-url', url)
                 }
             }
-            el.removeEventListener('will-navigate', handleWillNavigate)
-            el.addEventListener('will-navigate', handleWillNavigate)
 
             const handleDomReady = () => {
                 try {
@@ -242,18 +271,27 @@ function App(): React.ReactElement {
                 }
             }
 
-            el.removeEventListener('dom-ready', handleDomReady)
-            el.addEventListener('dom-ready', handleDomReady)
-
             const handleIpcMessage = (e: any) => {
                 if (e.channel === 'webview-notification') {
                     const { title, options } = e.args[0]
+
+                    // Only show notifications from messenger and marketplace tabs
+                    if (tab.type !== 'messenger' && tab.type !== 'marketplace') return
+
+                    // Skip "new requests" / "message requests" notifications
+                    const text = `${title} ${options.body || ''}`.toLowerCase()
+                    if (text.includes('message request') || text.includes('new request')) return
+
                     window.electron.ipcRenderer.send('show-notification', {
                         title,
                         body: options.body
                     })
                 } else if (e.channel === 'unread-count') {
                     const count = e.args[0]
+
+                    // Only count unreads from messenger and marketplace tabs
+                    if (tab.type !== 'messenger' && tab.type !== 'marketplace') return
+
                     unreadCountsRef.current[tab.id] = count
                     updateAggregatedUnreadCount()
                 } else if (e.channel === 'open-link') {
@@ -274,9 +312,30 @@ function App(): React.ReactElement {
                 }
             }
 
-            el.removeEventListener('ipc-message', handleIpcMessage)
+            // Add new handlers and store references for future cleanup
+            el.addEventListener('new-window', handleNewWindow)
+            el.addEventListener('will-navigate', handleWillNavigate)
+            el.addEventListener('dom-ready', handleDomReady)
             el.addEventListener('ipc-message', handleIpcMessage)
+            handlersRef.current.set(tab.id, { newWindow: handleNewWindow, willNavigate: handleWillNavigate, domReady: handleDomReady, ipcMessage: handleIpcMessage })
         })
+
+        // Cleanup: remove handlers for tabs that no longer exist
+        return () => {
+            const currentTabIds = new Set(tabs.map(t => t.id))
+            handlersRef.current.forEach((handlers, tabId) => {
+                if (!currentTabIds.has(tabId)) {
+                    const el = webviewRefs.current[tabId]
+                    if (el) {
+                        el.removeEventListener('new-window', handlers.newWindow)
+                        el.removeEventListener('will-navigate', handlers.willNavigate)
+                        el.removeEventListener('dom-ready', handlers.domReady)
+                        el.removeEventListener('ipc-message', handlers.ipcMessage)
+                    }
+                    handlersRef.current.delete(tabId)
+                }
+            })
+        }
     }, [tabs, webviewPreloadPath])
 
     // Automated Unsave Injection for Saved Tab
@@ -410,7 +469,20 @@ function App(): React.ReactElement {
                             className="nav-btn"
                             onClick={() => {
                                 const wv = webviewRefs.current[activeTabId]
-                                if (wv && wv.canGoBack()) wv.goBack()
+                                const activeTab = tabs.find(t => t.id === activeTabId)
+
+                                // If the webview has navigation history, go back
+                                if (wv && wv.canGoBack()) {
+                                    wv.goBack()
+                                    return
+                                }
+
+                                // For marketplace-item tabs with no history, close tab and return to marketplace
+                                if (activeTab?.type === 'marketplace-item') {
+                                    setTabs(prev => prev.filter(t => t.id !== activeTabId))
+                                    delete unreadCountsRef.current[activeTabId]
+                                    handleTabSwitch('marketplace')
+                                }
                             }}
                             title="Go Back"
                             style={{

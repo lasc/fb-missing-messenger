@@ -27,6 +27,12 @@ function App(): React.ReactElement {
     const [activeTabId, setActiveTabId] = useState<string>('messenger')
     const [webviewPreloadPath, setWebviewPreloadPath] = useState<string>('')
 
+    // Update checker state
+    const [updateInfo, setUpdateInfo] = useState<{ latestVersion: string; assetUrl: string; releaseName: string } | null>(null)
+    const [updateDismissed, setUpdateDismissed] = useState(false)
+    const [updateStage, setUpdateStage] = useState<'idle' | 'downloading' | 'installing' | 'restarting' | 'error'>('idle')
+    const [downloadPercent, setDownloadPercent] = useState(0)
+
     // Update visited state and timestamp when switching tabs
     const handleTabSwitch = (id: string) => {
         setActiveTabId(id)
@@ -87,6 +93,54 @@ function App(): React.ReactElement {
             setWebviewPreloadPath(fileUrl)
         })
     }, [])
+
+    // Check for updates on mount
+    useEffect(() => {
+        window.electron.ipcRenderer.invoke('check-for-updates').then((info: any) => {
+            if (info && info.hasUpdate) {
+                setUpdateInfo({
+                    latestVersion: info.latestVersion,
+                    assetUrl: info.assetUrl,
+                    releaseName: info.releaseName
+                })
+            }
+        })
+
+        // Listen for update progress from main process
+        const removeListener = window.electron.ipcRenderer.on('update-progress', (_event: any, data: any) => {
+            const { stage, percent } = typeof data === 'object' ? data : { stage: data, percent: undefined }
+            setUpdateStage(stage)
+            if (percent !== undefined) setDownloadPercent(percent)
+        })
+
+        // Listen for forced update check from menu
+        const removeForceListener = window.electron.ipcRenderer.on('force-update-check', (_event: any, info: any) => {
+            setUpdateInfo({
+                latestVersion: info.latestVersion,
+                assetUrl: info.assetUrl,
+                releaseName: info.releaseName
+            })
+            setUpdateDismissed(false)
+            setUpdateStage('idle')
+        })
+
+        return () => { removeListener?.(); removeForceListener?.() }
+    }, [])
+
+    const handleDismissUpdate = (dontRemind: boolean) => {
+        if (dontRemind && updateInfo) {
+            window.electron.ipcRenderer.send('dismiss-update-version', updateInfo.latestVersion)
+        }
+        setUpdateDismissed(true)
+    }
+
+    const handlePerformUpdate = () => {
+        if (!updateInfo) return
+        setUpdateStage('downloading')
+        window.electron.ipcRenderer.invoke('perform-update', updateInfo.assetUrl).catch(() => {
+            setUpdateStage('error')
+        })
+    }
 
     // Refs for webviews (using a map)
     const webviewRefs = React.useRef<{ [key: string]: any }>({})
@@ -515,6 +569,81 @@ function App(): React.ReactElement {
                 </nav>
             </aside>
             <main className="content">
+                {/* Update Banner */}
+                {updateInfo && !updateDismissed && (
+                    <div className="update-banner">
+                        <div className="update-banner-content">
+                            {updateStage === 'idle' ? (
+                                <>
+                                    <span className="update-banner-text">
+                                        🚀 <strong>{updateInfo.releaseName}</strong> is available!
+                                    </span>
+                                    <button
+                                        className="update-banner-download"
+                                        onClick={handlePerformUpdate}
+                                    >
+                                        Update
+                                    </button>
+                                    <label className="update-banner-checkbox">
+                                        <input
+                                            type="checkbox"
+                                            id="dont-remind-update"
+                                            onChange={(e) => {
+                                                if (e.target.checked) {
+                                                    handleDismissUpdate(true)
+                                                }
+                                            }}
+                                        />
+                                        Don't remind for this version
+                                    </label>
+                                    <button
+                                        className="update-banner-close"
+                                        onClick={() => handleDismissUpdate(false)}
+                                        title="Dismiss"
+                                    >
+                                        ×
+                                    </button>
+                                </>
+                            ) : updateStage === 'downloading' ? (
+                                <>
+                                    <span className="update-banner-text">
+                                        ⬇️ Downloading update… {downloadPercent}%
+                                    </span>
+                                    <div className="update-progress-bar">
+                                        <div className="update-progress-fill" style={{ width: `${downloadPercent}%` }} />
+                                    </div>
+                                </>
+                            ) : updateStage === 'installing' ? (
+                                <span className="update-banner-text">
+                                    ⚙️ Installing update…
+                                </span>
+                            ) : updateStage === 'restarting' ? (
+                                <span className="update-banner-text">
+                                    🔄 Restarting…
+                                </span>
+                            ) : updateStage === 'error' ? (
+                                <>
+                                    <span className="update-banner-text">
+                                        ❌ Update failed. Please try again.
+                                    </span>
+                                    <button
+                                        className="update-banner-download"
+                                        onClick={handlePerformUpdate}
+                                    >
+                                        Retry
+                                    </button>
+                                    <button
+                                        className="update-banner-close"
+                                        onClick={() => handleDismissUpdate(false)}
+                                        title="Dismiss"
+                                    >
+                                        ×
+                                    </button>
+                                </>
+                            ) : null}
+                        </div>
+                    </div>
+                )}
                 {!webviewPreloadPath ? (
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'white' }}>
                         Loading...

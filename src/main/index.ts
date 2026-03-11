@@ -239,7 +239,6 @@ function createWindow(): void {
   })
 
   let lastTotalUnreadCount = 0
-  let lastBounceTime = 0
 
   ipcMain.on('show-notification', (_event, { title, body }) => {
     const notification = new Notification({
@@ -261,15 +260,6 @@ function createWindow(): void {
   ipcMain.on('unread-count', (_event, count: number) => {
     if (process.platform === 'darwin') {
       app.setBadgeCount(count)
-      
-      const now = Date.now()
-      const isIncrease = count > lastTotalUnreadCount
-      const timeSinceLastBounce = now - lastBounceTime
-      
-      if (isIncrease && !mainWindow.isFocused() && timeSinceLastBounce > 2000) {
-          app.dock?.bounce('informational')
-          lastBounceTime = now
-      }
     }
     lastTotalUnreadCount = count
   })

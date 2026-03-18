@@ -195,6 +195,12 @@ function App(): React.ReactElement {
         div[style*="position: absolute"][style*="bottom"][style*="right"],
         div[data-pagelet="Dock"], 
         div[data-pagelet="ChatTab"],
+        div[data-pagelet="RightRail"],
+        div[data-pagelet="BuddyListPaglet"],
+        div[data-pagelet="ContactList"],
+        div[aria-label="Contacts"],
+        div[aria-label="Active contacts"],
+        div[role="complementary"],
         div[role="complementary"] iframe
         { 
             display: none !important; 
@@ -218,14 +224,20 @@ function App(): React.ReactElement {
         [aria-label="Create"],
         [aria-label="Messenger"],
         [aria-label="Chat settings"],
+        [aria-label="Contacts"],
+        [aria-label="Active contacts"],
         [aria-label="Facebook Marketplace Assistant"],
         div[aria-label="New message"],
         div[role="button"][aria-label="New message"],
         div[role="button"][aria-label="Messenger"],
         div[role="button"][aria-label="Create"],
         div[role="link"][aria-label="Create new listing"],
+        div[role="complementary"],
         div[data-pagelet="Dock"],
         div[data-pagelet="ChatTab"],
+        div[data-pagelet="RightRail"],
+        div[data-pagelet="BuddyListPaglet"],
+        div[data-pagelet="ContactList"],
         div[data-testid="mw_chat_tab_container"],
         div[data-testid="mw_chat_tabs_container"],
         div.mw227v9j,
@@ -240,6 +252,7 @@ function App(): React.ReactElement {
             pointer-events: none !important; 
             visibility: hidden !important;
             height: 0 !important;
+            width: 0 !important;
             overflow: hidden !important;
         }
     `

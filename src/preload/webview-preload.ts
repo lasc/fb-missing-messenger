@@ -63,8 +63,13 @@ if (!window.location.hostname.includes('messenger.com')) {
     [aria-label="Facebook Marketplace Assistant"],
     [aria-label="New message"],
     [aria-label="Chats"],
+    [aria-label="Contacts"],
+    [aria-label="Active contacts"],
     .fbDockWrapper, 
     .fbDock,
+    div[data-pagelet="RightRail"],
+    div[data-pagelet="BuddyListPaglet"],
+    div[data-pagelet="ContactList"],
     div[class*="x1n2onr6"][style*="bottom"][style*="right"],
     div[style*="position: fixed"][style*="bottom"][style*="right"] {
         display: none !important;
@@ -72,6 +77,8 @@ if (!window.location.hostname.includes('messenger.com')) {
         pointer-events: none !important;
         opacity: 0 !important;
         z-index: -9999 !important;
+        width: 0 !important;
+        height: 0 !important;
     }
   `
   const style = document.createElement('style')

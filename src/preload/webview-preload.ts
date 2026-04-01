@@ -227,10 +227,16 @@ document.addEventListener('click', (e) => {
       return
   }
 
-  // All Facebook links (groups, reels, profiles, events) and messenger redirect links -> external browser
-  if ((lowerUrl.includes('facebook.com') && !lowerUrl.includes('/messages')) || 
+  // Allow marketplace & saved internal navigation to stay in-app
+  if ((lowerUrl.includes('facebook.com') || lowerUrl.includes('fb.com')) &&
+      (lowerUrl.includes('/marketplace') || lowerUrl.includes('/saved'))) {
+      return
+  }
+
+  // All other Facebook links (groups, reels, profiles, events) and messenger redirect links -> external browser
+  if (lowerUrl.includes('facebook.com') || 
       lowerUrl.includes('l.messenger.com') ||
-      (lowerUrl.includes('fb.com') && !lowerUrl.includes('/messages')) ||
+      lowerUrl.includes('fb.com') ||
       lowerUrl.includes('fbcdn.net')) {
       e.preventDefault()
       e.stopPropagation()

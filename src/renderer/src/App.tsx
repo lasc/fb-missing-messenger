@@ -32,6 +32,7 @@ function App(): React.ReactElement {
     const [updateDismissed, setUpdateDismissed] = useState(false)
     const [updateStage, setUpdateStage] = useState<'idle' | 'downloading' | 'installing' | 'restarting' | 'error'>('idle')
     const [downloadPercent, setDownloadPercent] = useState(0)
+    const [updateErrorMessage, setUpdateErrorMessage] = useState('')
 
     // Update visited state and timestamp when switching tabs
     const handleTabSwitch = (id: string) => {
@@ -108,9 +109,10 @@ function App(): React.ReactElement {
 
         // Listen for update progress from main process
         const removeListener = window.electron.ipcRenderer.on('update-progress', (_event: any, data: any) => {
-            const { stage, percent } = typeof data === 'object' ? data : { stage: data, percent: undefined }
+            const { stage, percent, errorMessage } = typeof data === 'object' ? data : { stage: data, percent: undefined, errorMessage: undefined }
             setUpdateStage(stage)
             if (percent !== undefined) setDownloadPercent(percent)
+            if (errorMessage) setUpdateErrorMessage(errorMessage)
         })
 
         // Listen for forced update check from menu
@@ -315,7 +317,13 @@ function App(): React.ReactElement {
                     return
                 }
 
-                // Non-messenger Facebook links (groups, reels, profiles, events, etc.) -> external browser
+                // Allow marketplace & saved internal navigation to stay in-app
+                if ((lowerUrl.includes('facebook.com') || lowerUrl.includes('fb.com')) &&
+                    (lowerUrl.includes('/marketplace') || lowerUrl.includes('/saved'))) {
+                    return
+                }
+
+                // Non-Facebook links and non-app Facebook links (groups, reels, profiles, events, etc.) -> external browser
                 if (lowerUrl.includes('facebook.com') || lowerUrl.includes('fb.com') || lowerUrl.includes('fbcdn.net')) {
                     e.preventDefault()
                     window.electron.ipcRenderer.send('open-external-url', url)
@@ -655,7 +663,7 @@ function App(): React.ReactElement {
                             ) : updateStage === 'error' ? (
                                 <>
                                     <span className="update-banner-text">
-                                        ❌ Update failed. Please try again.
+                                        ❌ Update failed{updateErrorMessage ? `: ${updateErrorMessage}` : '. Please try again.'}
                                     </span>
                                     <button
                                         className="update-banner-download"

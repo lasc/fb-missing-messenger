@@ -116,8 +116,8 @@ function checkForUpdates(ignoreDismissed = false): Promise<UpdateInfo | null> {
 
 /** Download DMG, mount, copy .app over current installation, unmount, relaunch */
 async function performUpdate(assetUrl: string, win: BrowserWindow): Promise<void> {
-  const sendProgress = (stage: string, percent?: number) => {
-    try { win.webContents.send('update-progress', { stage, percent }) } catch { /* window closed */ }
+  const sendProgress = (stage: string, percent?: number, errorMessage?: string) => {
+    try { win.webContents.send('update-progress', { stage, percent, errorMessage }) } catch { /* window closed */ }
   }
 
   const dmgPath = join(app.getPath('temp'), 'fb-messenger-update.dmg')
@@ -195,7 +195,7 @@ async function performUpdate(assetUrl: string, win: BrowserWindow): Promise<void
   } catch (err: any) {
     // Cleanup on error
     try { unlinkSync(dmgPath) } catch { /* ok */ }
-    sendProgress('error')
+    sendProgress('error', undefined, err?.message || 'Unknown error')
     throw err
   }
 }

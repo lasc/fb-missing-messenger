@@ -56,7 +56,10 @@ if (titleElement) {
 }
 
 // UI Cleanup for Non-Messenger Pages (Marketplace, generic FB)
-if (!window.location.hostname.includes('messenger.com')) {
+const isMessenger = window.location.hostname.includes('messenger.com') ||
+  (window.location.hostname.includes('facebook.com') && window.location.pathname.startsWith('/messages')) ||
+  (window.location.hostname.includes('fb.com') && window.location.pathname.startsWith('/messages'))
+if (!isMessenger) {
   // 1. Static CSS Injection (Immediate visual hide)
   const hideCSS = `
     [role="complementary"], 
@@ -206,7 +209,7 @@ document.addEventListener('click', (e) => {
   // Skip javascript: and # links
   if (url.startsWith('javascript:') || url.startsWith('#') || url === '') return
   
-  // Handle marketplace item links - open in app
+  // Handle marketplace item links - open in app tab
   if (lowerUrl.includes('/marketplace/item/') ||
       lowerUrl.includes('/marketplace/listing/') ||
       lowerUrl.includes('marketplace_item_id') ||
@@ -217,12 +220,22 @@ document.addEventListener('click', (e) => {
       return
   }
   
-  // Allow Facebook/Messenger internal navigation
-  if (lowerUrl.includes('facebook.com') || 
-      lowerUrl.includes('messenger.com') || 
-      lowerUrl.includes('fb.com') ||
+  // Allow core Messenger navigation to stay in-app
+  if ((lowerUrl.includes('messenger.com') && !lowerUrl.includes('l.messenger.com')) ||
+      (lowerUrl.includes('facebook.com') && lowerUrl.includes('/messages')) ||
+      (lowerUrl.includes('fb.com') && lowerUrl.includes('/messages'))) {
+      return
+  }
+
+  // All Facebook links (groups, reels, profiles, events) and messenger redirect links -> external browser
+  if ((lowerUrl.includes('facebook.com') && !lowerUrl.includes('/messages')) || 
+      lowerUrl.includes('l.messenger.com') ||
+      (lowerUrl.includes('fb.com') && !lowerUrl.includes('/messages')) ||
       lowerUrl.includes('fbcdn.net')) {
-      return // Let normal navigation happen
+      e.preventDefault()
+      e.stopPropagation()
+      ipcRenderer.sendToHost('open-external', url)
+      return
   }
   
   // All other external links - open in default browser

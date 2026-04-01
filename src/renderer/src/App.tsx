@@ -17,7 +17,7 @@ const MAX_PRUNABLE_TABS = 5
 function App(): React.ReactElement {
     const [tabs, setTabs] = useState<Tab[]>(() => {
         const initialTabs: Tab[] = [
-            { id: 'messenger', type: 'messenger', url: 'https://www.messenger.com/', icon: '💬' },
+            { id: 'messenger', type: 'messenger', url: 'https://www.facebook.com/messages/', icon: '💬' },
             { id: 'marketplace', type: 'marketplace', url: 'https://www.facebook.com/marketplace/', icon: '🏪' },
             { id: 'saved', type: 'saved', url: 'https://www.facebook.com/saved/', icon: '🔖' }
         ]
@@ -296,6 +296,8 @@ function App(): React.ReactElement {
                 if (!url) return
 
                 const lowerUrl = url.toLowerCase()
+
+                // Open marketplace items in a new in-app tab
                 if (lowerUrl.includes('/marketplace/item/') ||
                     lowerUrl.includes('/item/') ||
                     lowerUrl.includes('/marketplace/listing/') ||
@@ -305,10 +307,22 @@ function App(): React.ReactElement {
                     return
                 }
 
-                if (url.includes('facebook.com') || url.includes('messenger.com') || url.includes('fb.com')) {
+                // Allow core messenger navigation to stay in-app
+                if (lowerUrl.includes('messenger.com') ||
+                    lowerUrl.includes('l.messenger.com') ||
+                    (lowerUrl.includes('facebook.com') && lowerUrl.includes('/messages')) ||
+                    (lowerUrl.includes('fb.com') && lowerUrl.includes('/messages'))) {
                     return
                 }
 
+                // Non-messenger Facebook links (groups, reels, profiles, events, etc.) -> external browser
+                if (lowerUrl.includes('facebook.com') || lowerUrl.includes('fb.com') || lowerUrl.includes('fbcdn.net')) {
+                    e.preventDefault()
+                    window.electron.ipcRenderer.send('open-external-url', url)
+                    return
+                }
+
+                // All other external links -> external browser
                 if (url.startsWith('http://') || url.startsWith('https://')) {
                     e.preventDefault()
                     window.electron.ipcRenderer.send('open-external-url', url)
@@ -365,9 +379,13 @@ function App(): React.ReactElement {
                     const url = e.args[0]
                     if (url) {
                         const lower = url.toLowerCase()
-                        if (lower.includes('marketplace') || lower.includes('/item/')) {
+                        if (lower.includes('/marketplace/item/') ||
+                            lower.includes('/marketplace/listing/') ||
+                            lower.includes('marketplace_item_id') ||
+                            lower.includes('referral_code=marketplace')) {
                             openMarketplaceItem(url)
                         } else {
+                            // All other links (groups, reels, profiles, etc.) -> external browser
                             window.electron.ipcRenderer.send('open-external-url', url)
                         }
                     }

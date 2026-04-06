@@ -342,20 +342,45 @@ function App(): React.ReactElement {
                     el.insertCSS(baseHideCSS);
                 } catch (e) { }
 
+                // All tabs on facebook.com need the top nav bar hidden
+                // (messenger tab is now on facebook.com/messages, not messenger.com)
+                try {
+                    // Hide the Facebook top navigation bar
+                    const navHideCSS = `
+                        [role="banner"],
+                        div[role="banner"],
+                        div[data-pagelet="BlueBar"],
+                        nav[role="navigation"],
+                        div[role="navigation"].x9f619
+                        {
+                            display: none !important;
+                            opacity: 0 !important;
+                            pointer-events: none !important;
+                            visibility: hidden !important;
+                            height: 0 !important;
+                            width: 0 !important;
+                            overflow: hidden !important;
+                        }
+                    `;
+                    el.insertCSS(navHideCSS);
+
+                    const coverScript = `
+                        (function() {
+                            var cover = document.getElementById('dyad-header-cover');
+                            if (!cover) {
+                                cover = document.createElement('div');
+                                cover.id = 'dyad-header-cover';
+                                cover.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:56px;background:#18191A;z-index:2147483647;pointer-events:none;';
+                                document.body.appendChild(cover);
+                            }
+                        })();
+                    `;
+                    el.executeJavaScript(coverScript);
+                } catch (e) { }
+
                 if (tab.type !== 'messenger') {
                     try {
-                        const coverScript = `
-                            (function() {
-                                var cover = document.getElementById('dyad-header-cover');
-                                if (!cover) {
-                                    cover = document.createElement('div');
-                                    cover.id = 'dyad-header-cover';
-                                    cover.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:56px;background:#18191A;z-index:2147483647;pointer-events:none;';
-                                    document.body.appendChild(cover);
-                                }
-                            })();
-                        `;
-                        el.executeJavaScript(coverScript);
+                        el.insertCSS(facebookChromeCSS);
                     } catch (e) { }
                 }
             }
@@ -367,9 +392,23 @@ function App(): React.ReactElement {
                     // Only show notifications from messenger and marketplace tabs
                     if (tab.type !== 'messenger' && tab.type !== 'marketplace') return
 
-                    // Skip "new requests" / "message requests" notifications
+                    // Skip non-message notifications (FB general notifications that leak through
+                    // now that messenger is on facebook.com/messages)
                     const text = `${title} ${options.body || ''}`.toLowerCase()
                     if (text.includes('message request') || text.includes('new request')) return
+
+                    // Filter out general Facebook notifications (not messages)
+                    const fbNonMessagePatterns = [
+                        'commented on', 'replied to', 'reacted to', 'tagged you',
+                        'friend request', 'accepted your', 'poked you', 'suggested',
+                        'posted in', 'invited you', 'went live', 'is live',
+                        'birthday', 'memory', 'memories', 'on this day',
+                        'story', 'stories', 'reel',
+                        'liked your', 'loves your', 'shared your',
+                        'mentioned you', 'group', 'event',
+                        'marketplace assistant', 'page', 'fundraiser'
+                    ]
+                    if (fbNonMessagePatterns.some(p => text.includes(p))) return
 
                     window.electron.ipcRenderer.send('show-notification', {
                         title,

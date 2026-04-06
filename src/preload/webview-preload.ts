@@ -32,27 +32,74 @@ window.Notification = class extends EventTarget {
   }
 }
 
-// Unread count tracking via Title
+// Unread count tracking
 let lastUnreadCount = -1
+
+const isMessengerPage = window.location.hostname.includes('messenger.com') ||
+  (window.location.hostname.includes('facebook.com') && window.location.pathname.startsWith('/messages')) ||
+  (window.location.hostname.includes('fb.com') && window.location.pathname.startsWith('/messages'))
+
+const isOldMessenger = window.location.hostname.includes('messenger.com')
+
 const updateUnreadCount = () => {
-  const title = document.title
-  const match = title.match(/\((\d+)\)/)
-  const count = match ? parseInt(match[1], 10) : 0
-  
+  let count = 0
+
+  if (isOldMessenger) {
+    // Old messenger.com: title (N) is reliable for message count
+    const title = document.title
+    const match = title.match(/\((\d+)\)/)
+    count = match ? parseInt(match[1], 10) : 0
+  } else if (isMessengerPage) {
+    // facebook.com/messages: title (N) includes ALL FB notifications.
+    // Instead, count unread indicators in the chat list.
+    // Facebook marks unread chats with a bold/unread indicator dot or bold text.
+    const unreadDots = document.querySelectorAll(
+      '[data-testid="mwthreadlist-item"] [data-visualcompletion="ignore"] span[style*="background"],' +
+      '[aria-label*="unread"]'
+    )
+    // Also try the Messenger-specific navigation badge if available
+    const messengerBadge = document.querySelector(
+      '[aria-label="Chats"] [data-visualcompletion="ignore"] span,' +
+      'a[href="/messages/"] span[data-visualcompletion="ignore"]'
+    )
+    if (messengerBadge && messengerBadge.textContent) {
+      const badgeNum = parseInt(messengerBadge.textContent.trim(), 10)
+      if (!isNaN(badgeNum)) {
+        count = badgeNum
+      }
+    } else if (unreadDots.length > 0) {
+      count = unreadDots.length
+    } else {
+      // Last resort: check the page title, but this may overcount
+      const title = document.title
+      const match = title.match(/\((\d+)\)/)
+      count = match ? parseInt(match[1], 10) : 0
+    }
+  } else {
+    // Marketplace/Saved: title-based count is fine
+    const title = document.title
+    const match = title.match(/\((\d+)\)/)
+    count = match ? parseInt(match[1], 10) : 0
+  }
+
   if (count !== lastUnreadCount) {
     lastUnreadCount = count
     ipcRenderer.sendToHost('unread-count', count)
   }
 }
 
-// Observe title changes
-const titleObserver = new MutationObserver(updateUnreadCount)
-const titleElement = document.querySelector('title')
-if (titleElement) {
-  titleObserver.observe(titleElement, { childList: true, characterData: true, subtree: true })
+// Observe title changes and DOM mutations for unread tracking
+if (isMessengerPage && !isOldMessenger) {
+  // For facebook.com/messages, poll since the unread indicators are deep in the DOM
+  setInterval(updateUnreadCount, 3000)
 } else {
-  // Fallback if title element is not yet available
-  setInterval(updateUnreadCount, 2000)
+  const titleObserver = new MutationObserver(updateUnreadCount)
+  const titleElement = document.querySelector('title')
+  if (titleElement) {
+    titleObserver.observe(titleElement, { childList: true, characterData: true, subtree: true })
+  } else {
+    setInterval(updateUnreadCount, 2000)
+  }
 }
 
 // UI Cleanup for Non-Messenger Pages (Marketplace, generic FB)

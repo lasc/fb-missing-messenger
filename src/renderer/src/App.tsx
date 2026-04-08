@@ -342,16 +342,14 @@ function App(): React.ReactElement {
                     el.insertCSS(baseHideCSS);
                 } catch (e) { }
 
-                // All tabs on facebook.com need the top nav bar hidden
+                // Hide the Facebook top banner bar on ALL tabs
                 // (messenger tab is now on facebook.com/messages, not messenger.com)
                 try {
-                    // Hide the Facebook top navigation bar
-                    const navHideCSS = `
+                    // Banner-only CSS — safe for messenger (doesn't touch the chat list sidebar)
+                    const bannerHideCSS = `
                         [role="banner"],
                         div[role="banner"],
-                        div[data-pagelet="BlueBar"],
-                        nav[role="navigation"],
-                        div[role="navigation"].x9f619
+                        div[data-pagelet="BlueBar"]
                         {
                             display: none !important;
                             opacity: 0 !important;
@@ -362,7 +360,7 @@ function App(): React.ReactElement {
                             overflow: hidden !important;
                         }
                     `;
-                    el.insertCSS(navHideCSS);
+                    el.insertCSS(bannerHideCSS);
 
                     const coverScript = `
                         (function() {

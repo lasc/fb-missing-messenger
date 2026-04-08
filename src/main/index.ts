@@ -231,42 +231,6 @@ function createWindow(): void {
     shell.openExternal(details.url)
     return { action: 'deny' }
   })
-  
-  ipcMain.on('open-external-url', (_event, url: string) => {
-    if (url && (url.startsWith('http://') || url.startsWith('https://'))) {
-      shell.openExternal(url)
-    }
-  })
-
-  let lastTotalUnreadCount = 0
-
-  ipcMain.on('show-notification', (_event, { title, body }) => {
-    const notification = new Notification({
-      title,
-      body,
-      silent: false
-    })
-    notification.show()
-    notification.on('click', () => {
-      if (mainWindow.isMinimized()) mainWindow.restore()
-      mainWindow.focus()
-    })
-
-    if (!mainWindow.isFocused() && process.platform === 'darwin') {
-      app.dock?.bounce('informational')
-    }
-  })
-
-  ipcMain.on('unread-count', (_event, count: number) => {
-    if (process.platform === 'darwin') {
-      app.setBadgeCount(count)
-    }
-    lastTotalUnreadCount = count
-  })
-
-  ipcMain.handle('get-webview-preload-path', () => {
-    return join(__dirname, '../preload/webview-preload.js')
-  })
 
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
@@ -303,6 +267,43 @@ app.whenReady().then(() => {
     const win = BrowserWindow.getAllWindows()[0]
     if (!win) throw new Error('No window found')
     await performUpdate(assetUrl, win)
+  })
+
+  // App IPC handlers (registered once, use dynamic window lookup)
+  ipcMain.on('open-external-url', (_event, url: string) => {
+    if (url && (url.startsWith('http://') || url.startsWith('https://'))) {
+      shell.openExternal(url)
+    }
+  })
+
+  ipcMain.on('show-notification', (_event, { title, body }) => {
+    const win = BrowserWindow.getAllWindows()[0]
+    const notification = new Notification({
+      title,
+      body,
+      silent: false
+    })
+    notification.show()
+    notification.on('click', () => {
+      if (win) {
+        if (win.isMinimized()) win.restore()
+        win.focus()
+      }
+    })
+
+    if (win && !win.isFocused() && process.platform === 'darwin') {
+      app.dock?.bounce('informational')
+    }
+  })
+
+  ipcMain.on('unread-count', (_event, count: number) => {
+    if (process.platform === 'darwin') {
+      app.setBadgeCount(count)
+    }
+  })
+
+  ipcMain.handle('get-webview-preload-path', () => {
+    return join(__dirname, '../preload/webview-preload.js')
   })
 
   session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {

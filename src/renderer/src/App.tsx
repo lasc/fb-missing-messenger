@@ -219,7 +219,6 @@ function App(): React.ReactElement {
         [role="banner"],
         div[role="banner"],
         div[data-pagelet="BlueBar"],
-        nav[role="navigation"],
         [aria-label="New message"], 
         [aria-label="New Message"],
         [aria-label="Compose message"],
@@ -246,8 +245,7 @@ function App(): React.ReactElement {
         div.fbDockWrapper,
         div.fbDock,
         div[style*="position: fixed"][style*="bottom: 0"][style*="right: 0"],
-        div[class*="x1n2onr6"][style*="right: 0px"],
-        div[role="navigation"].x9f619
+        div[class*="x1n2onr6"][style*="right: 0px"]
         { 
             display: none !important; 
             opacity: 0 !important; 

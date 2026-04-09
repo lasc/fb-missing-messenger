@@ -194,6 +194,9 @@ async function performUpdate(assetUrl: string, win: BrowserWindow): Promise<void
       // Copy new .app over current installation
       execSync(`rm -rf "${currentAppBundle}"`, { encoding: 'utf-8' })
       execSync(`cp -R "${sourceApp}" "${currentAppBundle}"`, { encoding: 'utf-8' })
+      // Strip quarantine and re-sign so macOS Gatekeeper doesn't block the updated app
+      try { execSync(`xattr -cr "${currentAppBundle}"`, { encoding: 'utf-8' }) } catch { /* ok */ }
+      try { execSync(`codesign --force --deep --sign - "${currentAppBundle}"`, { encoding: 'utf-8' }) } catch { /* ok */ }
     } finally {
       // Always unmount
       try { execSync(`hdiutil detach "${mountPoint}" -force 2>&1`) } catch { /* ok */ }

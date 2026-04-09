@@ -25,6 +25,21 @@ A native wrapper for Messenger and Facebook Marketplace, built for macOS.
 - **TypeScript**: Type-safe development.
 - **Vite**: Fast development server and bundling.
 
+## Installation
+
+1. Download the latest `.dmg` from [Releases](https://github.com/lasc/fb-missing-messenger/releases)
+2. Open the DMG and drag **FB Missing Messenger** to your Applications folder
+3. **Important — macOS Gatekeeper**: Since this app isn't notarized with Apple, macOS will block it on first launch. Run these commands in Terminal to fix it:
+
+   ```bash
+   xattr -cr "/Applications/FB Missing Messenger.app"
+   codesign --force --deep --sign - "/Applications/FB Missing Messenger.app"
+   ```
+
+4. Launch the app from your Applications folder or Dock
+
+> **Note**: You only need to do step 3 once. In-app updates will work without this step.
+
 ## Development
 
 ### Install Dependencies
@@ -46,7 +61,6 @@ This project uses `electron-builder` for distribution.
 ```bash
 npm run dist
 ```
-*Note: macOS code signing is currently skipped/self-signed.*
 
 ## License
 

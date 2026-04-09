@@ -385,28 +385,74 @@ function App(): React.ReactElement {
 
             const handleIpcMessage = (e: any) => {
                 if (e.channel === 'webview-notification') {
-                    const { title, options } = e.args[0]
+                    const { title, options, sourceUrl, sourcePathname } = e.args[0]
 
                     // Only show notifications from messenger and marketplace tabs
                     if (tab.type !== 'messenger' && tab.type !== 'marketplace') return
 
-                    // Skip non-message notifications (FB general notifications that leak through
-                    // now that messenger is on facebook.com/messages)
                     const text = `${title} ${options.body || ''}`.toLowerCase()
-                    if (text.includes('message request') || text.includes('new request')) return
+                    const tag = (options.tag || '').toLowerCase()
+                    const icon = (options.icon || '').toLowerCase()
 
-                    // Filter out general Facebook notifications (not messages)
+                    // --- Layer 1: Source URL check ---
+                    // For the messenger tab, verify the notification originated from the
+                    // /messages path. Facebook fires general notifications (friend requests,
+                    // comments, etc.) from the main facebook.com domain which the webview
+                    // also hosts. Reject anything not from /messages.
+                    if (tab.type === 'messenger') {
+                        const path = sourcePathname || ''
+                        // Only allow notifications originating from the messages pages
+                        if (!path.startsWith('/messages')) return
+                    }
+
+                    // --- Layer 2: Tag/icon-based Messenger indicators ---
+                    // Facebook Messenger notifications typically carry specific tag patterns
+                    const isMessengerTag = tag.includes('msg') || tag.includes('message') ||
+                        tag.includes('thread') || tag.includes('chat') ||
+                        tag.includes('mercury') || tag.includes('webpush')
+
+                    // --- Layer 3: Blocklist — reject known non-message Facebook notifications ---
                     const fbNonMessagePatterns = [
-                        'commented on', 'replied to', 'reacted to', 'tagged you',
-                        'friend request', 'accepted your', 'poked you', 'suggested',
-                        'posted in', 'invited you', 'went live', 'is live',
-                        'birthday', 'memory', 'memories', 'on this day',
-                        'story', 'stories', 'reel',
+                        'commented on', 'replied to your comment', 'reacted to',
+                        'tagged you', 'friend request', 'accepted your',
+                        'poked you', 'suggested', 'posted in', 'invited you',
+                        'went live', 'is live', 'birthday', 'memory', 'memories',
+                        'on this day', 'story', 'stories', 'reel',
                         'liked your', 'loves your', 'shared your',
-                        'mentioned you', 'group', 'event',
-                        'marketplace assistant', 'page', 'fundraiser'
+                        'mentioned you in', 'group', 'event',
+                        'marketplace assistant', 'page', 'fundraiser',
+                        'new follower', 'follow request', 'is following you',
+                        'added a new photo', 'updated their', 'checked in',
+                        'was tagged', 'also commented', 'also replied',
+                        'new notification', 'new login', 'security',
+                        'recommend', 'suggestion for you',
+                        'your post', 'your photo', 'your video',
+                        'message request', 'new request'
                     ]
                     if (fbNonMessagePatterns.some(p => text.includes(p))) return
+
+                    // --- Layer 4: Allowlist — only pass through likely message notifications ---
+                    // If the notification doesn't have a Messenger-specific tag, apply
+                    // heuristics: real chat notifications typically have a short title
+                    // (the sender's name) and a body (the message preview), or patterns
+                    // like "sent you", "sent a", "new message", "replied to you", audio/video.
+                    if (!isMessengerTag) {
+                        const messageIndicators = [
+                            'sent you', 'sent a', 'new message', 'replied to you',
+                            'is calling', 'missed call', 'voice message',
+                            'video', 'photo', 'sticker', 'gif', 'audio',
+                            'reacted', 'thumbs up', '👍',
+                            'named the group', 'changed the'
+                        ]
+                        const looksLikeMessage = messageIndicators.some(p => text.includes(p))
+
+                        // A typical Messenger notification has a title (sender name) + body (message).
+                        // If it doesn't have a body and doesn't match message indicators, skip it.
+                        if (!looksLikeMessage && !options.body) return
+
+                        // If it has no body and no message indicator, it's likely a generic FB notif
+                        if (!looksLikeMessage && title.length > 80) return
+                    }
 
                     window.electron.ipcRenderer.send('show-notification', {
                         title,

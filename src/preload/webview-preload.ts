@@ -15,7 +15,7 @@ window.Notification = class extends EventTarget {
   constructor(title: string, options?: NotificationOptions) {
     super()
     
-    // Send to host page (App.tsx)
+    // Send to host page (App.tsx) with source context for filtering
     ipcRenderer.sendToHost('webview-notification', {
       title,
       options: {
@@ -23,7 +23,9 @@ window.Notification = class extends EventTarget {
         icon: options?.icon,
         tag: options?.tag,
         data: options?.data
-      }
+      },
+      sourceUrl: window.location.href,
+      sourcePathname: window.location.pathname
     })
   }
 

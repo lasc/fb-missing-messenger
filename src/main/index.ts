@@ -1,6 +1,6 @@
 import { app, shell, BrowserWindow, ipcMain, nativeImage, session, Notification, Menu, dialog } from 'electron'
 import { join } from 'path'
-import { readFileSync, writeFileSync, createWriteStream, unlinkSync } from 'fs'
+import { readFileSync, writeFileSync, createWriteStream, unlinkSync, statSync } from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import https from 'https'
 import { execSync } from 'child_process'
@@ -123,9 +123,16 @@ async function performUpdate(assetUrl: string, win: BrowserWindow): Promise<void
   const dmgPath = join(app.getPath('temp'), 'fb-messenger-update.dmg')
 
   try {
+    // Clean up any leftover DMG from a previous failed attempt
+    try { unlinkSync(dmgPath) } catch { /* ok */ }
+
     // --- Download DMG ---
     sendProgress('downloading', 0)
     const { res } = await httpsGet(assetUrl)
+
+    if (res.statusCode && res.statusCode >= 400) {
+      throw new Error(`Download failed with HTTP ${res.statusCode}`)
+    }
 
     const totalBytes = parseInt(res.headers['content-length'] || '0', 10)
     let downloadedBytes = 0
@@ -134,14 +141,23 @@ async function performUpdate(assetUrl: string, win: BrowserWindow): Promise<void
     await new Promise<void>((resolve, reject) => {
       res.on('data', (chunk: Buffer) => {
         downloadedBytes += chunk.length
-        file.write(chunk)
         if (totalBytes > 0) {
           sendProgress('downloading', Math.round((downloadedBytes / totalBytes) * 100))
         }
       })
-      res.on('end', () => { file.end(); resolve() })
-      res.on('error', reject)
+      res.on('error', (err: Error) => { file.destroy(); reject(err) })
+      file.on('error', (err: Error) => { res.destroy(); reject(err) })
+      // Wait for the 'close' event — this fires AFTER the file is fully flushed to disk
+      file.on('close', () => resolve())
+      // Pipe handles backpressure and calls file.end() when the response ends
+      res.pipe(file)
     })
+
+    // Validate the downloaded file before mounting
+    const fileSize = statSync(dmgPath).size
+    if (fileSize < 1024) {
+      throw new Error(`Downloaded DMG is too small (${fileSize} bytes) — download may have failed`)
+    }
 
     // --- Mount DMG ---
     sendProgress('installing')

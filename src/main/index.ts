@@ -235,7 +235,8 @@ function createWindow(): void {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
       webviewTag: true
-    }
+    },
+    backgroundColor: '#18191A'
   })
 
   if (process.platform === 'darwin') {
@@ -258,14 +259,27 @@ function createWindow(): void {
   }
 }
 
-// Performance optimization flags (keeping only safe ones that don't affect session storage)
+// Performance optimization flags
 app.commandLine.appendSwitch('js-flags', '--max-old-space-size=256')
 app.commandLine.appendSwitch('renderer-process-limit', '4')
 app.commandLine.appendSwitch('disable-extensions')
+// GPU & rendering acceleration
+app.commandLine.appendSwitch('enable-gpu-rasterization')
+app.commandLine.appendSwitch('enable-zero-copy')
+app.commandLine.appendSwitch('enable-hardware-overlays', 'single-fullscreen,single-on-top,underlay')
+app.commandLine.appendSwitch('enable-features', 'VaapiVideoDecoder,VaapiVideoEncoder,CanvasOopRasterization')
+// Network performance
+app.commandLine.appendSwitch('enable-quic')
+app.commandLine.appendSwitch('enable-tcp-fastopen')
 
 app.whenReady().then(() => {
   electronApp.setAppUserModelId('com.evame.fbmissingmessenger')
   app.setName('FB Missing Messenger')
+
+  // Configure persistent session cache for webviews
+  // This keeps cookies, DOM storage, and HTTP cache across restarts
+  const webviewSession = session.fromPartition('persist:webview')
+  webviewSession.setPreloads([])
   app.setAboutPanelOptions({
     applicationName: 'FB Missing Messenger',
     applicationVersion: app.getVersion(),

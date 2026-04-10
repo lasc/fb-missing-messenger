@@ -17,12 +17,11 @@ const MAX_PRUNABLE_TABS = 5
 function App(): React.ReactElement {
     const [tabs, setTabs] = useState<Tab[]>(() => {
         const initialTabs: Tab[] = [
-            { id: 'messenger', type: 'messenger', url: 'https://www.facebook.com/messages/', icon: '💬' },
-            { id: 'marketplace', type: 'marketplace', url: 'https://www.facebook.com/marketplace/', icon: '🏪' },
-            { id: 'saved', type: 'saved', url: 'https://www.facebook.com/saved/', icon: '🔖' }
+            { id: 'messenger', type: 'messenger', url: 'https://www.facebook.com/messages/', icon: '💬', hasBeenVisited: true, lastVisited: Date.now() },
+            { id: 'marketplace', type: 'marketplace', url: 'https://www.facebook.com/marketplace/', icon: '🏪', hasBeenVisited: true, lastVisited: Date.now() - 1 },
+            { id: 'saved', type: 'saved', url: 'https://www.facebook.com/saved/', icon: '🔖', hasBeenVisited: true, lastVisited: Date.now() - 2 }
         ]
-        // Mark the initially active tab as visited
-        return initialTabs.map(t => t.id === 'messenger' ? { ...t, hasBeenVisited: true, lastVisited: Date.now() } : t)
+        return initialTabs
     })
     const [activeTabId, setActiveTabId] = useState<string>('messenger')
     const [webviewPreloadPath, setWebviewPreloadPath] = useState<string>('')
@@ -189,7 +188,7 @@ function App(): React.ReactElement {
         }
     }
 
-    // Base CSS to hide Chat Bubbles and Floating elements
+    // Base CSS to hide Chat Bubbles and Floating elements (applies to ALL tabs)
     const baseHideCSS = `
         div.mw227v9j span, 
         div[class*="x1n2onr6"][style*="bottom"][style*="right"],
@@ -202,6 +201,10 @@ function App(): React.ReactElement {
         div[data-pagelet="ContactList"],
         div[aria-label="Contacts"],
         div[aria-label="Active contacts"],
+        div[aria-label="Messenger overlay"],
+        [data-testid="mw_chat_tab_container"],
+        [data-testid="mw_chat_tabs_container"],
+        [data-testid="messenger_dock"],
         div[role="complementary"],
         div[role="complementary"] iframe
         { 
@@ -210,6 +213,8 @@ function App(): React.ReactElement {
             pointer-events: none !important; 
             visibility: hidden !important;
             z-index: -9999 !important;
+            width: 0 !important;
+            height: 0 !important;
         }
     `
 
@@ -779,6 +784,7 @@ function App(): React.ReactElement {
                                 useragent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
                                 allowpopups={true}
                                 preload={webviewPreloadPath}
+                                partition="persist:webview"
                             ></webview>
 
                         )

@@ -213,7 +213,30 @@ if (!isMessenger) {
           if (container) removeElement(container)
       })
 
-      // B. Geometric + Computed Style Scan
+      // B. Targeted chat element removal by aria-label and data-testid
+      const chatSelectors = [
+          '[aria-label="Messenger"]',
+          '[aria-label="Messenger overlay"]',
+          '[aria-label="Chats"]',
+          '[aria-label="New message"]',
+          '[aria-label="Start a new chat"]',
+          '[data-testid="mw_chat_tab_container"]',
+          '[data-testid="mw_chat_tabs_container"]',
+          '[data-testid="Messenger"]',
+          '[data-testid="messenger_dock"]',
+          '[data-pagelet="Dock"]',
+          '[data-pagelet="ChatTab"]'
+      ]
+      chatSelectors.forEach(sel => {
+          document.querySelectorAll(sel).forEach(el => {
+              const role = el.getAttribute('role') || ''
+              if (role !== 'main' && role !== 'navigation') {
+                  removeElement(el)
+              }
+          })
+      })
+
+      // C. Geometric + Computed Style Scan
       const allDivs = document.getElementsByTagName('div')
       const winHeight = window.innerHeight
       const winWidth = window.innerWidth
@@ -226,7 +249,7 @@ if (!isMessenger) {
         const rect = el.getBoundingClientRect()
         if (rect.bottom < winHeight - 300 || rect.right < winWidth - 450) continue
         if (rect.width > 500 || rect.height > 600) continue
-        if (rect.width < 50 || rect.height < 50) continue
+        if (rect.width < 20 || rect.height < 20) continue
 
         const style = window.getComputedStyle(el)
         if (style.position === 'fixed' || style.position === 'sticky') {

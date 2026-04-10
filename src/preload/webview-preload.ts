@@ -294,8 +294,8 @@ document.addEventListener('click', (e) => {
   
   // Allow core Messenger navigation to stay in-app
   if ((lowerUrl.includes('messenger.com') && !lowerUrl.includes('l.messenger.com')) ||
-      (lowerUrl.includes('facebook.com') && lowerUrl.includes('/messages')) ||
-      (lowerUrl.includes('fb.com') && lowerUrl.includes('/messages'))) {
+      (lowerUrl.includes('facebook.com') && (lowerUrl.includes('/messages') || lowerUrl.includes('/messenger_media'))) ||
+      (lowerUrl.includes('fb.com') && (lowerUrl.includes('/messages') || lowerUrl.includes('/messenger_media')))) {
       return
   }
 

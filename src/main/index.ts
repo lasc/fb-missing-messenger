@@ -1,8 +1,7 @@
-import { app, shell, BrowserWindow, ipcMain, nativeImage, session, Notification, Menu, dialog } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, nativeImage, session, Notification, Menu, dialog, net } from 'electron'
 import { join } from 'path'
 import { readFileSync, writeFileSync, createWriteStream, unlinkSync, statSync } from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
-import https from 'https'
 import { execSync } from 'child_process'
 
 // --- Update Checker ---
@@ -39,79 +38,65 @@ function setDismissedVersion(version: string): void {
   writeFileSync(filePath, JSON.stringify({ dismissedVersion: version }), 'utf-8')
 }
 
-/** HTTPS GET with redirect following (GitHub → S3) */
-function httpsGet(url: string, headers: Record<string, string> = {}): Promise<{ res: import('http').IncomingMessage }> {
+/** Fetch URL using Electron's net module (uses Chromium's network stack + system certs) */
+function electronFetch(url: string, headers: Record<string, string> = {}): Promise<Electron.IncomingMessage> {
   return new Promise((resolve, reject) => {
-    const parsed = new URL(url)
-    const req = https.get({
-      hostname: parsed.hostname,
-      path: parsed.pathname + parsed.search,
-      headers: { 'User-Agent': 'FB-Missing-Messenger-UpdateChecker', ...headers }
-    }, (res) => {
-      if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        httpsGet(res.headers.location, headers).then(resolve).catch(reject)
-      } else {
-        resolve({ res })
-      }
+    const request = net.request({
+      url,
+      redirect: 'follow'
     })
-    req.on('error', reject)
-    req.setTimeout(30000, () => { req.destroy(); reject(new Error('timeout')) })
+    request.setHeader('User-Agent', 'FB-Missing-Messenger-UpdateChecker')
+    for (const [key, value] of Object.entries(headers)) {
+      request.setHeader(key, value)
+    }
+    request.on('response', (response) => {
+      resolve(response)
+    })
+    request.on('error', reject)
+    request.end()
   })
 }
 
-function checkForUpdates(ignoreDismissed = false): Promise<UpdateInfo | null> {
-  return new Promise((resolve) => {
-    const options = {
-      hostname: 'api.github.com',
-      path: '/repos/lasc/fb-missing-messenger/releases/latest',
-      headers: { 'User-Agent': 'FB-Missing-Messenger-UpdateChecker' }
-    }
+async function checkForUpdates(ignoreDismissed = false): Promise<UpdateInfo | null> {
+  try {
+    const response = await electronFetch('https://api.github.com/repos/lasc/fb-missing-messenger/releases/latest')
 
-    const req = https.get(options, (res) => {
-      let body = ''
-      res.on('data', (chunk: string) => { body += chunk })
-      res.on('end', () => {
-        try {
-          const release = JSON.parse(body)
-          const latestVersion = release.tag_name
-          const currentVersion = app.getVersion()
-
-          if (compareSemver(currentVersion, latestVersion) < 0) {
-            if (!ignoreDismissed) {
-              const dismissed = getDismissedVersion()
-              if (dismissed === latestVersion) {
-                resolve(null)
-                return
-              }
-            }
-
-            // Find the DMG asset
-            const dmgAsset = release.assets?.find((a: any) =>
-              a.name.endsWith('.dmg')
-            )
-            if (!dmgAsset) {
-              resolve(null)
-              return
-            }
-
-            resolve({
-              hasUpdate: true,
-              latestVersion,
-              assetUrl: dmgAsset.browser_download_url,
-              releaseName: release.name || latestVersion
-            })
-          } else {
-            resolve(null)
-          }
-        } catch {
-          resolve(null)
-        }
-      })
+    const body = await new Promise<string>((resolve, reject) => {
+      let data = ''
+      response.on('data', (chunk: Buffer) => { data += chunk.toString() })
+      response.on('end', () => resolve(data))
+      response.on('error', reject)
     })
 
-    req.on('error', () => resolve(null))
-    req.setTimeout(10000, () => { req.destroy(); resolve(null) })
-  })
+    const release = JSON.parse(body)
+    const latestVersion = release.tag_name
+    const currentVersion = app.getVersion()
+
+    if (compareSemver(currentVersion, latestVersion) < 0) {
+      if (!ignoreDismissed) {
+        const dismissed = getDismissedVersion()
+        if (dismissed === latestVersion) {
+          return null
+        }
+      }
+
+      // Find the DMG asset
+      const dmgAsset = release.assets?.find((a: any) =>
+        a.name.endsWith('.dmg')
+      )
+      if (!dmgAsset) return null
+
+      return {
+        hasUpdate: true,
+        latestVersion,
+        assetUrl: dmgAsset.browser_download_url,
+        releaseName: release.name || latestVersion
+      }
+    }
+    return null
+  } catch {
+    return null
+  }
 }
 
 /** Download DMG, mount, copy .app over current installation, unmount, relaunch */
@@ -128,29 +113,28 @@ async function performUpdate(assetUrl: string, win: BrowserWindow): Promise<void
 
     // --- Download DMG ---
     sendProgress('downloading', 0)
-    const { res } = await httpsGet(assetUrl)
+    const response = await electronFetch(assetUrl)
 
-    if (res.statusCode && res.statusCode >= 400) {
-      throw new Error(`Download failed with HTTP ${res.statusCode}`)
+    if (response.statusCode && response.statusCode >= 400) {
+      throw new Error(`Download failed with HTTP ${response.statusCode}`)
     }
 
-    const totalBytes = parseInt(res.headers['content-length'] || '0', 10)
+    const totalBytes = parseInt(String(response.headers['content-length'] || '0'), 10)
     let downloadedBytes = 0
     const file = createWriteStream(dmgPath)
 
     await new Promise<void>((resolve, reject) => {
-      res.on('data', (chunk: Buffer) => {
+      response.on('data', (chunk: Buffer) => {
         downloadedBytes += chunk.length
+        file.write(chunk)
         if (totalBytes > 0) {
           sendProgress('downloading', Math.round((downloadedBytes / totalBytes) * 100))
         }
       })
-      res.on('error', (err: Error) => { file.destroy(); reject(err) })
-      file.on('error', (err: Error) => { res.destroy(); reject(err) })
-      // Wait for the 'close' event — this fires AFTER the file is fully flushed to disk
+      response.on('error', (err: Error) => { file.destroy(); reject(err) })
+      response.on('end', () => { file.end(); })
+      file.on('error', (err: Error) => { reject(err) })
       file.on('close', () => resolve())
-      // Pipe handles backpressure and calls file.end() when the response ends
-      res.pipe(file)
     })
 
     // Validate the downloaded file before mounting

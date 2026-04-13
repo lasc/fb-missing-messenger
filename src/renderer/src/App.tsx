@@ -393,69 +393,96 @@ function App(): React.ReactElement {
                     // Only show notifications from messenger and marketplace tabs
                     if (tab.type !== 'messenger' && tab.type !== 'marketplace') return
 
-                    const text = `${title} ${options.body || ''}`.toLowerCase()
-                    const tag = (options.tag || '').toLowerCase()
-                    const icon = (options.icon || '').toLowerCase()
+                    // --- STRICT FILTERING: Block by default, only allow real chat messages ---
 
-                    // --- Layer 1: Source URL check ---
-                    // For the messenger tab, verify the notification originated from the
-                    // /messages path. Facebook fires general notifications (friend requests,
-                    // comments, etc.) from the main facebook.com domain which the webview
-                    // also hosts. Reject anything not from /messages.
+                    // Layer 1: Source URL — must originate from /messages path
                     if (tab.type === 'messenger') {
                         const path = sourcePathname || ''
-                        // Only allow notifications originating from the messages pages
                         if (!path.startsWith('/messages')) return
                     }
 
-                    // --- Layer 2: Tag/icon-based Messenger indicators ---
-                    // Facebook Messenger notifications typically carry specific tag patterns
-                    const isMessengerTag = tag.includes('msg') || tag.includes('message') ||
-                        tag.includes('thread') || tag.includes('chat') ||
-                        tag.includes('mercury') || tag.includes('webpush')
+                    // Layer 2: Must have BOTH title AND body
+                    // Real message notifications = sender name (title) + message preview (body)
+                    // Most generic Facebook notifications lack a body or have title-only
+                    if (!title || !options.body) return
 
-                    // --- Layer 3: Blocklist — reject known non-message Facebook notifications ---
-                    const fbNonMessagePatterns = [
-                        'commented on', 'replied to your comment', 'reacted to',
-                        'tagged you', 'friend request', 'accepted your',
-                        'poked you', 'suggested', 'posted in', 'invited you',
-                        'went live', 'is live', 'birthday', 'memory', 'memories',
-                        'on this day', 'story', 'stories', 'reel',
-                        'liked your', 'loves your', 'shared your',
-                        'mentioned you in', 'group', 'event',
-                        'marketplace assistant', 'page', 'fundraiser',
+                    // Layer 3: Title length — sender names are short, action descriptions are long
+                    if (title.length > 50) return
+
+                    const titleLower = title.toLowerCase()
+                    const bodyLower = (options.body || '').toLowerCase()
+                    const combined = `${titleLower} ${bodyLower}`
+
+                    // Layer 4: Aggressive blocklist — reject if ANY of these appear in title OR body
+                    const blockPatterns = [
+                        // Social interactions
+                        'commented', 'comment on', 'replied to your', 'reply to your',
+                        'reacted to your', 'reaction to', 'liked your', 'likes your',
+                        'loves your', 'shared your', 'shared a link', 'shared a post',
+                        'tagged you', 'tagged in', 'mentioned you', 'mention in',
+                        // Friend/follow activity
+                        'friend request', 'accepted your', 'people you may know',
                         'new follower', 'follow request', 'is following you',
-                        'added a new photo', 'updated their', 'checked in',
-                        'was tagged', 'also commented', 'also replied',
+                        'wants to be your', 'sent you a friend',
+                        // Posts & media activity
+                        'posted in', 'posted on', 'posted a', 'new post',
+                        'your post', 'your photo', 'your video', 'your comment',
+                        'added a new', 'updated their', 'changed their',
+                        'checked in', 'was tagged', 'were tagged',
+                        'also commented', 'also replied',
+                        // Content types
+                        'story', 'stories', 'reel', 'reels',
+                        'went live', 'is live', 'live video',
+                        // Memories & events
+                        'birthday', 'memory', 'memories', 'on this day',
+                        'event', 'happening today', 'happening near',
+                        // Pages & groups
+                        'group', 'page', 'fundraiser', 'community',
+                        'suggested for you', 'suggestion for you', 'recommend',
+                        // Account & security
                         'new notification', 'new login', 'security',
-                        'recommend', 'suggestion for you',
-                        'your post', 'your photo', 'your video',
-                        'message request', 'new request'
+                        'password', 'account', 'verify', 'confirm',
+                        // Marketplace (non-chat)
+                        'marketplace assistant', 'listing', 'price drop',
+                        'back in stock', 'similar items', 'items you',
+                        // Pokes & misc social
+                        'poked you', 'invited you', 'invite to',
+                        'is now friends', 'became friends',
+                        // Request types
+                        'message request', 'new request', 'pending request'
                     ]
-                    if (fbNonMessagePatterns.some(p => text.includes(p))) return
+                    if (blockPatterns.some(p => combined.includes(p))) return
 
-                    // --- Layer 4: Allowlist — only pass through likely message notifications ---
-                    // If the notification doesn't have a Messenger-specific tag, apply
-                    // heuristics: real chat notifications typically have a short title
-                    // (the sender's name) and a body (the message preview), or patterns
-                    // like "sent you", "sent a", "new message", "replied to you", audio/video.
-                    if (!isMessengerTag) {
-                        const messageIndicators = [
-                            'sent you', 'sent a', 'new message', 'replied to you',
-                            'is calling', 'missed call', 'voice message',
-                            'video', 'photo', 'sticker', 'gif', 'audio',
-                            'reacted', 'thumbs up', '👍',
-                            'named the group', 'changed the'
-                        ]
-                        const looksLikeMessage = messageIndicators.some(p => text.includes(p))
+                    // Layer 5: Positive allowlist — MUST match a chat message pattern
+                    // Only let through notifications that look like actual incoming messages
+                    const messagePatterns = [
+                        'sent you a', 'sent a message', 'sent an audio',
+                        'sent a voice', 'sent a photo', 'sent a video',
+                        'sent a sticker', 'sent a gif', 'sent a file',
+                        'sent a link', 'sent you', 'sent a',
+                        'new message', 'replied to you',
+                        'is calling', 'missed call', 'missed a call',
+                        'voice message', 'voice call', 'video call',
+                        'named the group', 'changed the group',
+                        'added you to', 'removed you from',
+                        '👍', 'thumbs up'
+                    ]
+                    const tag = (options.tag || '').toLowerCase()
+                    const isMessengerTag = tag.includes('msg') || tag.includes('thread') ||
+                        tag.includes('chat') || tag.includes('mercury')
+                    const matchesMessagePattern = messagePatterns.some(p => combined.includes(p))
 
-                        // A typical Messenger notification has a title (sender name) + body (message).
-                        // If it doesn't have a body and doesn't match message indicators, skip it.
-                        if (!looksLikeMessage && !options.body) return
+                    // Allow if: has a messenger-specific tag, OR matches a message pattern,
+                    // OR body is very short (< 100 chars, likely a chat message preview with no keywords)
+                    if (!isMessengerTag && !matchesMessagePattern && bodyLower.length > 100) return
 
-                        // If it has no body and no message indicator, it's likely a generic FB notif
-                        if (!looksLikeMessage && title.length > 80) return
-                    }
+                    // Final safety: if body contains action verbs that indicate FB activity, block it
+                    const actionVerbs = [
+                        'commented', 'replied to a', 'reacted', 'liked', 'shared',
+                        'tagged', 'mentioned', 'invited', 'posted', 'suggested',
+                        'followed', 'is following'
+                    ]
+                    if (actionVerbs.some(v => bodyLower.includes(v)) && !matchesMessagePattern) return
 
                     window.electron.ipcRenderer.send('show-notification', {
                         title,

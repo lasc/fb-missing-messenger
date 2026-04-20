@@ -15,8 +15,7 @@ window.Notification = class extends EventTarget {
   constructor(title: string, options?: NotificationOptions) {
     super()
     
-    // Send to host page (App.tsx) with source context for filtering
-    ipcRenderer.sendToHost('webview-notification', {
+    const payload = {
       title,
       options: {
         body: options?.body,
@@ -26,7 +25,23 @@ window.Notification = class extends EventTarget {
       },
       sourceUrl: window.location.href,
       sourcePathname: window.location.pathname
-    })
+    }
+
+    // 🔍 DEBUG: Log every notification Facebook fires at the source
+    console.log(
+      '%c[NOTIF-PRELOAD] 🔔 Notification intercepted',
+      'background: #FF6B00; color: white; padding: 2px 6px; border-radius: 3px;',
+      '\n  Title:', title,
+      '\n  Body:', options?.body || '(none)',
+      '\n  Tag:', options?.tag || '(none)',
+      '\n  Icon:', options?.icon ? '(has icon)' : '(no icon)',
+      '\n  Data:', options?.data || '(none)',
+      '\n  Source URL:', window.location.href,
+      '\n  Source Path:', window.location.pathname
+    )
+
+    // Send to host page (App.tsx) with source context for filtering
+    ipcRenderer.sendToHost('webview-notification', payload)
   }
 
   close() {
@@ -45,12 +60,14 @@ const isOldMessenger = window.location.hostname.includes('messenger.com')
 
 const updateUnreadCount = () => {
   let count = 0
+  let source = 'unknown'
 
   if (isOldMessenger) {
     // Old messenger.com: title (N) is reliable for message count
     const title = document.title
     const match = title.match(/\((\d+)\)/)
     count = match ? parseInt(match[1], 10) : 0
+    source = `old-messenger title="${title}"`
   } else if (isMessengerPage) {
     // facebook.com/messages: title (N) includes ALL FB notifications.
     // Instead, count unread indicators in the chat list.
@@ -68,23 +85,33 @@ const updateUnreadCount = () => {
       const badgeNum = parseInt(messengerBadge.textContent.trim(), 10)
       if (!isNaN(badgeNum)) {
         count = badgeNum
+        source = `messenger-badge text="${messengerBadge.textContent.trim()}"`
       }
     } else if (unreadDots.length > 0) {
       count = unreadDots.length
+      source = `unread-dots count=${unreadDots.length}`
     } else {
       // Last resort: check the page title, but this may overcount
       const title = document.title
       const match = title.match(/\((\d+)\)/)
       count = match ? parseInt(match[1], 10) : 0
+      source = `title-fallback title="${title}"`
     }
   } else {
     // Marketplace/Saved: title-based count is fine
     const title = document.title
     const match = title.match(/\((\d+)\)/)
     count = match ? parseInt(match[1], 10) : 0
+    source = `other-page title="${title}"`
   }
 
   if (count !== lastUnreadCount) {
+    console.log(
+      `%c[UNREAD] 📊 Count changed: ${lastUnreadCount} → ${count}`,
+      'background: #7C3AED; color: white; padding: 2px 6px; border-radius: 3px;',
+      `\n  Source: ${source}`,
+      `\n  Page: ${window.location.pathname}`
+    )
     lastUnreadCount = count
     ipcRenderer.sendToHost('unread-count', count)
   }
@@ -93,13 +120,16 @@ const updateUnreadCount = () => {
 // Observe title changes and DOM mutations for unread tracking
 if (isMessengerPage && !isOldMessenger) {
   // For facebook.com/messages, poll since the unread indicators are deep in the DOM
+  console.log('[UNREAD] 📡 Starting 3s polling for facebook.com/messages unread count')
   setInterval(updateUnreadCount, 3000)
 } else {
   const titleObserver = new MutationObserver(updateUnreadCount)
   const titleElement = document.querySelector('title')
   if (titleElement) {
+    console.log('[UNREAD] 👁️ Observing <title> element for changes')
     titleObserver.observe(titleElement, { childList: true, characterData: true, subtree: true })
   } else {
+    console.log('[UNREAD] ⚠️ No <title> element found, falling back to 2s polling')
     setInterval(updateUnreadCount, 2000)
   }
 }
@@ -114,16 +144,32 @@ if (!isMessenger) {
     [role="complementary"], 
     [aria-label="Facebook Marketplace Assistant"],
     [aria-label="New message"],
+    [aria-label="New Message"],
     [aria-label="Chats"],
     [aria-label="Contacts"],
     [aria-label="Active contacts"],
+    [aria-label="Messenger overlay"],
+    [aria-label="Chat tab"],
+    [aria-label="Chat conversation"],
+    [aria-label="Close chat"],
+    [aria-label="Minimize chat"],
+    [aria-label="Open chat"],
     .fbDockWrapper, 
     .fbDock,
+    .fbNub,
     div[data-pagelet="RightRail"],
     div[data-pagelet="BuddyListPaglet"],
     div[data-pagelet="ContactList"],
+    div[data-pagelet="Dock"],
+    div[data-pagelet="ChatTab"],
+    div[data-testid="mw_chat_tab_container"],
+    div[data-testid="mw_chat_tabs_container"],
+    div[data-testid="messenger_dock"],
     div[class*="x1n2onr6"][style*="bottom"][style*="right"],
-    div[style*="position: fixed"][style*="bottom"][style*="right"] {
+    div[style*="position: fixed"][style*="bottom"][style*="right"],
+    div[style*="position: fixed"][style*="bottom: 0"],
+    div[role="dialog"][style*="position: fixed"],
+    div.mw227v9j {
         display: none !important;
         visibility: hidden !important;
         pointer-events: none !important;
@@ -131,6 +177,8 @@ if (!isMessenger) {
         z-index: -9999 !important;
         width: 0 !important;
         height: 0 !important;
+        max-height: 0 !important;
+        overflow: hidden !important;
     }
   `
   const style = document.createElement('style')
@@ -171,8 +219,15 @@ if (!isMessenger) {
           const label = el.getAttribute('aria-label')
           if (label && (
               label.includes('Facebook Marketplace Assistant') || 
+              label.includes('Messenger overlay') ||
+              label.includes('Chat tab') ||
+              label.includes('Chat conversation') ||
+              label.includes('Close chat') ||
+              label.includes('Minimize chat') ||
+              label.includes('Open chat') ||
               label === 'Chats' || 
-              label === 'New message'
+              label === 'New message' ||
+              label === 'New Message'
           )) {
               removeElement(el)
               return
@@ -184,9 +239,30 @@ if (!isMessenger) {
               return
           }
 
+          // Heuristic 3b: Dialog role with fixed positioning (chat popups)
+          if (role === 'dialog') {
+              const style = window.getComputedStyle(el)
+              if (style.position === 'fixed') {
+                  removeElement(el)
+                  return
+              }
+          }
+
           // Heuristic 4: Specific Data Pagelets (Chat Tabs)
           const pagelet = el.getAttribute('data-pagelet')
           if (pagelet === 'ChatTab' || pagelet === 'Dock') {
+              removeElement(el)
+              return
+          }
+
+          // Heuristic 5: Data-testid for chat containers
+          const testid = el.getAttribute('data-testid')
+          if (testid && (
+              testid === 'mw_chat_tab_container' ||
+              testid === 'mw_chat_tabs_container' ||
+              testid === 'messenger_dock' ||
+              testid === 'Messenger'
+          )) {
               removeElement(el)
               return
           }
@@ -207,10 +283,24 @@ if (!isMessenger) {
   // 4. "Scorched Earth" Interval Check (Geometric & Content)
   setInterval(() => {
       // A. Look for "Close chat" buttons and kill their container
-      const closeButtons = document.querySelectorAll('[aria-label="Close chat"], [aria-label="Minimize chat"]')
+      const closeButtons = document.querySelectorAll('[aria-label="Close chat"], [aria-label="Minimize chat"], [aria-label="Open chat"]')
       closeButtons.forEach(btn => {
-          const container = btn.closest('[role="dialog"]') || btn.closest('[role="region"]') || btn.closest('.fbNub') || btn.closest('div[style*="position: fixed"]')
-          if (container) removeElement(container)
+          // Walk up to find the chat window container
+          let container = btn.closest('[role="dialog"]') || btn.closest('[role="region"]') || btn.closest('.fbNub') || btn.closest('div[style*="position: fixed"]')
+          if (container) {
+              removeElement(container)
+          } else {
+              // Try walking up the tree manually to find a fixed-position ancestor
+              let parent = btn.parentElement
+              for (let depth = 0; parent && depth < 15; depth++) {
+                  const ps = window.getComputedStyle(parent)
+                  if (ps.position === 'fixed') {
+                      removeElement(parent)
+                      break
+                  }
+                  parent = parent.parentElement
+              }
+          }
       })
 
       // B. Targeted chat element removal by aria-label and data-testid
@@ -219,7 +309,10 @@ if (!isMessenger) {
           '[aria-label="Messenger overlay"]',
           '[aria-label="Chats"]',
           '[aria-label="New message"]',
+          '[aria-label="New Message"]',
           '[aria-label="Start a new chat"]',
+          '[aria-label="Chat tab"]',
+          '[aria-label="Chat conversation"]',
           '[data-testid="mw_chat_tab_container"]',
           '[data-testid="mw_chat_tabs_container"]',
           '[data-testid="Messenger"]',
@@ -264,7 +357,31 @@ if (!isMessenger) {
              }
         }
       }
-  }, 3000)
+
+      // D. Nuclear option: find ANY fixed/absolute element at bottom-right with chat-like characteristics
+      // (avatar images, message text, input fields anchored to bottom-right corner)
+      const bottomElements = document.querySelectorAll(
+          'div[style*="position: fixed"][style*="bottom"],' +
+          'div[style*="position: absolute"][style*="bottom"]'
+      )
+      bottomElements.forEach(el => {
+          const htmlEl = el as HTMLElement
+          const rect = htmlEl.getBoundingClientRect()
+          // Only target elements positioned in bottom-right quadrant
+          if (rect.bottom > winHeight - 100 && rect.right > winWidth - 500) {
+              const role = htmlEl.getAttribute('role') || ''
+              if (role !== 'main' && role !== 'navigation' && role !== 'banner') {
+                  // Check if it looks like a chat (has images/avatars, input, or message-like content)
+                  const hasAvatar = htmlEl.querySelector('img[src*="scontent"], image, svg')
+                  const hasInput = htmlEl.querySelector('input, textarea, [contenteditable]')
+                  const hasChatUI = htmlEl.querySelector('[aria-label*="chat"], [aria-label*="Chat"], [aria-label*="message"], [aria-label*="Message"]')
+                  if (hasAvatar || hasInput || hasChatUI) {
+                      removeElement(htmlEl)
+                  }
+              }
+          }
+      })
+  }, 2000)
 }
 
 // 5. Global Link Interceptor - Handle all link clicks

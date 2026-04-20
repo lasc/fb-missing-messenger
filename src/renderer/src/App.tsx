@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react'
+import { Settings, AppSettings, DEFAULT_SETTINGS } from './Settings'
 
 // Tab definitions
 type TabType = 'messenger' | 'marketplace' | 'saved' | 'marketplace-item'
@@ -32,6 +33,12 @@ function App(): React.ReactElement {
     const [updateStage, setUpdateStage] = useState<'idle' | 'downloading' | 'installing' | 'restarting' | 'error'>('idle')
     const [downloadPercent, setDownloadPercent] = useState(0)
     const [updateErrorMessage, setUpdateErrorMessage] = useState('')
+
+    // Settings state
+    const [showSettings, setShowSettings] = useState(false)
+    const [appSettings, setAppSettings] = useState<AppSettings>(DEFAULT_SETTINGS)
+    const settingsRef = React.useRef(appSettings)
+    useEffect(() => { settingsRef.current = appSettings }, [appSettings])
 
     // Update visited state and timestamp when switching tabs
     const handleTabSwitch = (id: string) => {
@@ -92,19 +99,28 @@ function App(): React.ReactElement {
             const fileUrl = path.startsWith('/') ? `file://${path}` : path
             setWebviewPreloadPath(fileUrl)
         })
-    }, [])
 
-    // Check for updates on mount
-    useEffect(() => {
-        window.electron.ipcRenderer.invoke('check-for-updates').then((info: any) => {
-            if (info && info.hasUpdate) {
-                setUpdateInfo({
-                    latestVersion: info.latestVersion,
-                    assetUrl: info.assetUrl,
-                    releaseName: info.releaseName
-                })
+        // Load settings from disk
+        window.electron.ipcRenderer.invoke('get-settings').then((saved: Partial<AppSettings>) => {
+            if (saved && typeof saved === 'object') {
+                setAppSettings(prev => ({ ...prev, ...saved }))
             }
         })
+    }, [])
+
+    // Check for updates on mount (respects settings)
+    useEffect(() => {
+        if (appSettings.autoCheckUpdates) {
+            window.electron.ipcRenderer.invoke('check-for-updates').then((info: any) => {
+                if (info && info.hasUpdate) {
+                    setUpdateInfo({
+                        latestVersion: info.latestVersion,
+                        assetUrl: info.assetUrl,
+                        releaseName: info.releaseName
+                    })
+                }
+            })
+        }
 
         // Listen for update progress from main process
         const removeListener = window.electron.ipcRenderer.on('update-progress', (_event: any, data: any) => {
@@ -125,7 +141,13 @@ function App(): React.ReactElement {
             setUpdateStage('idle')
         })
 
-        return () => { removeListener?.(); removeForceListener?.() }
+        // Listen for notification click — switch to messenger tab
+        const removeNotifClickListener = window.electron.ipcRenderer.on('notification-clicked', () => {
+            console.log('[NOTIF] Notification clicked — switching to messenger tab')
+            handleTabSwitch('messenger')
+        })
+
+        return () => { removeListener?.(); removeForceListener?.(); removeNotifClickListener?.() }
     }, [])
 
     const handleDismissUpdate = (dontRemind: boolean) => {
@@ -188,11 +210,11 @@ function App(): React.ReactElement {
         }
     }
 
-    // Base CSS to hide Chat Bubbles and Floating elements (applies to ALL tabs)
     const baseHideCSS = `
         div.mw227v9j span, 
         div[class*="x1n2onr6"][style*="bottom"][style*="right"],
         div[style*="position: fixed"][style*="bottom"][style*="right"],
+        div[style*="position: fixed"][style*="bottom: 0"],
         div[style*="position: absolute"][style*="bottom"][style*="right"],
         div[data-pagelet="Dock"], 
         div[data-pagelet="ChatTab"],
@@ -202,11 +224,21 @@ function App(): React.ReactElement {
         div[aria-label="Contacts"],
         div[aria-label="Active contacts"],
         div[aria-label="Messenger overlay"],
+        div[aria-label="Chat tab"],
+        div[aria-label="Chat conversation"],
+        [aria-label="Close chat"],
+        [aria-label="Minimize chat"],
+        [aria-label="Open chat"],
         [data-testid="mw_chat_tab_container"],
         [data-testid="mw_chat_tabs_container"],
         [data-testid="messenger_dock"],
         div[role="complementary"],
-        div[role="complementary"] iframe
+        div[role="complementary"] iframe,
+        div[role="dialog"][style*="position: fixed"],
+        div.mw227v9j,
+        div.fbDockWrapper,
+        div.fbDock,
+        div.fbNub
         { 
             display: none !important; 
             opacity: 0 !important; 
@@ -215,10 +247,11 @@ function App(): React.ReactElement {
             z-index: -9999 !important;
             width: 0 !important;
             height: 0 !important;
+            max-height: 0 !important;
+            overflow: hidden !important;
         }
     `
 
-    // Aggressive CSS for Non-Messenger tabs
     const facebookChromeCSS = `
         .fbDockWrapper, .fbDock, .fbNub, 
         [role="banner"],
@@ -233,12 +266,19 @@ function App(): React.ReactElement {
         [aria-label="Contacts"],
         [aria-label="Active contacts"],
         [aria-label="Facebook Marketplace Assistant"],
+        [aria-label="Chat tab"],
+        [aria-label="Chat conversation"],
+        [aria-label="Close chat"],
+        [aria-label="Minimize chat"],
+        [aria-label="Open chat"],
+        [aria-label="Messenger overlay"],
         div[aria-label="New message"],
         div[role="button"][aria-label="New message"],
         div[role="button"][aria-label="Messenger"],
         div[role="button"][aria-label="Create"],
         div[role="link"][aria-label="Create new listing"],
         div[role="complementary"],
+        div[role="dialog"][style*="position: fixed"],
         div[data-pagelet="Dock"],
         div[data-pagelet="ChatTab"],
         div[data-pagelet="RightRail"],
@@ -246,10 +286,13 @@ function App(): React.ReactElement {
         div[data-pagelet="ContactList"],
         div[data-testid="mw_chat_tab_container"],
         div[data-testid="mw_chat_tabs_container"],
+        div[data-testid="messenger_dock"],
         div.mw227v9j,
         div.fbDockWrapper,
         div.fbDock,
+        div.fbNub,
         div[style*="position: fixed"][style*="bottom: 0"][style*="right: 0"],
+        div[style*="position: fixed"][style*="bottom: 0"],
         div[class*="x1n2onr6"][style*="right: 0px"]
         { 
             display: none !important; 
@@ -258,6 +301,7 @@ function App(): React.ReactElement {
             visibility: hidden !important;
             height: 0 !important;
             width: 0 !important;
+            max-height: 0 !important;
             overflow: hidden !important;
         }
     `
@@ -341,9 +385,12 @@ function App(): React.ReactElement {
             }
 
             const handleDomReady = () => {
-                try {
-                    el.insertCSS(baseHideCSS);
-                } catch (e) { }
+                // Only inject chat-hiding CSS if setting is enabled
+                if (settingsRef.current.hideChatBubbles) {
+                    try {
+                        el.insertCSS(baseHideCSS);
+                    } catch (e) { }
+                }
 
                 // Hide the Facebook top banner bar on ALL tabs
                 // (messenger tab is now on facebook.com/messages, not messenger.com)
@@ -379,9 +426,73 @@ function App(): React.ReactElement {
                     el.executeJavaScript(coverScript);
                 } catch (e) { }
 
-                if (tab.type !== 'messenger') {
+                if (tab.type !== 'messenger' && settingsRef.current.hideChatBubbles) {
                     try {
                         el.insertCSS(facebookChromeCSS);
+                    } catch (e) { }
+
+                    // JS-based chat killer — catches elements where Facebook sets styles via JS
+                    // (not as inline style attributes), which CSS attribute selectors can't target
+                    try {
+                        const chatKillerScript = `
+                            (function() {
+                                function killChats() {
+                                    // Kill by aria-label
+                                    var chatLabels = ['Close chat','Minimize chat','Open chat','Chat tab',
+                                        'Chat conversation','Messenger overlay','Chats','New message','New Message'];
+                                    chatLabels.forEach(function(label) {
+                                        document.querySelectorAll('[aria-label="' + label + '"]').forEach(function(el) {
+                                            var r = el.getAttribute('role') || '';
+                                            if (r !== 'main' && r !== 'navigation') {
+                                                // Walk up to find the top-level chat container
+                                                var target = el.closest('[role="dialog"]') || el.closest('[role="region"]');
+                                                if (!target) {
+                                                    var p = el;
+                                                    for (var d = 0; p && d < 20; d++) {
+                                                        var cs = window.getComputedStyle(p);
+                                                        if (cs.position === 'fixed' || cs.position === 'absolute') {
+                                                            target = p;
+                                                            break;
+                                                        }
+                                                        p = p.parentElement;
+                                                    }
+                                                }
+                                                if (target) {
+                                                    target.style.display = 'none';
+                                                    target.remove();
+                                                } else {
+                                                    el.style.display = 'none';
+                                                    el.remove();
+                                                }
+                                            }
+                                        });
+                                    });
+
+                                    // Kill fixed-position elements at bottom-right (chat dock area)
+                                    var divs = document.getElementsByTagName('div');
+                                    var wh = window.innerHeight;
+                                    var ww = window.innerWidth;
+                                    for (var i = 0; i < divs.length; i++) {
+                                        var el = divs[i];
+                                        if (el.style.display === 'none') continue;
+                                        var cs = window.getComputedStyle(el);
+                                        if (cs.position !== 'fixed') continue;
+                                        var rect = el.getBoundingClientRect();
+                                        if (rect.bottom > wh - 50 && rect.right > ww - 500 && rect.height < 600 && rect.width < 500) {
+                                            var hasChat = el.querySelector('[contenteditable], textarea, input, [aria-label*="chat"], [aria-label*="Chat"], [aria-label*="message"], [aria-label*="Message"]');
+                                            if (hasChat) {
+                                                el.style.display = 'none';
+                                                el.remove();
+                                            }
+                                        }
+                                    }
+                                }
+                                // Run immediately and then periodically
+                                killChats();
+                                setInterval(killChats, 2000);
+                            })();
+                        `;
+                        el.executeJavaScript(chatKillerScript);
                     } catch (e) { }
                 }
             }
@@ -390,24 +501,57 @@ function App(): React.ReactElement {
                 if (e.channel === 'webview-notification') {
                     const { title, options, sourceUrl, sourcePathname } = e.args[0]
 
+                    const debugId = `[${tab.type}:${tab.id}]`
+                    const dbg = settingsRef.current.debugLogging
+                    if (dbg) console.log(
+                        `%c[NOTIF-FILTER] ${debugId} 📨 Received notification`,
+                        'background: #2563EB; color: white; padding: 2px 6px; border-radius: 3px;',
+                        '\n  Title:', title,
+                        '\n  Body:', options?.body || '(none)',
+                        '\n  Tag:', options?.tag || '(none)',
+                        '\n  Source URL:', sourceUrl,
+                        '\n  Source Path:', sourcePathname
+                    )
+
+                    // Check if notifications are disabled in renderer-side settings
+                    if (!settingsRef.current.notifications) {
+                        if (dbg) console.log(`%c[NOTIF-FILTER] ${debugId} ⏭️ Notifications disabled in settings`, 'color: #F59E0B')
+                        return
+                    }
+
                     // Only show notifications from messenger and marketplace tabs
-                    if (tab.type !== 'messenger' && tab.type !== 'marketplace') return
+                    if (tab.type !== 'messenger' && tab.type !== 'marketplace') {
+                        if (dbg) console.log(`%c[NOTIF-FILTER] ${debugId} ❌ BLOCKED: tab type is '${tab.type}' (not messenger/marketplace)`, 'color: #EF4444')
+                        return
+                    }
 
                     // --- STRICT FILTERING: Block by default, only allow real chat messages ---
 
                     // Layer 1: Source URL — must originate from /messages path
                     if (tab.type === 'messenger') {
                         const path = sourcePathname || ''
-                        if (!path.startsWith('/messages')) return
+                        if (!path.startsWith('/messages')) {
+                            if (dbg) console.log(`%c[NOTIF-FILTER] ${debugId} ❌ BLOCKED Layer 1: source path '${path}' doesn't start with /messages`, 'color: #EF4444')
+                            return
+                        }
+                        if (dbg) console.log(`%c[NOTIF-FILTER] ${debugId} ✅ Layer 1 passed: source path OK`, 'color: #22C55E')
                     }
 
                     // Layer 2: Must have BOTH title AND body
                     // Real message notifications = sender name (title) + message preview (body)
                     // Most generic Facebook notifications lack a body or have title-only
-                    if (!title || !options.body) return
+                    if (!title || !options.body) {
+                        if (dbg) console.log(`%c[NOTIF-FILTER] ${debugId} ❌ BLOCKED Layer 2: missing title or body (title=${!!title}, body=${!!options.body})`, 'color: #EF4444')
+                        return
+                    }
+                    if (dbg) console.log(`%c[NOTIF-FILTER] ${debugId} ✅ Layer 2 passed: has title and body`, 'color: #22C55E')
 
                     // Layer 3: Title length — sender names are short, action descriptions are long
-                    if (title.length > 50) return
+                    if (title.length > 50) {
+                        if (dbg) console.log(`%c[NOTIF-FILTER] ${debugId} ❌ BLOCKED Layer 3: title too long (${title.length} chars)`, 'color: #EF4444')
+                        return
+                    }
+                    if (dbg) console.log(`%c[NOTIF-FILTER] ${debugId} ✅ Layer 3 passed: title length OK (${title.length})`, 'color: #22C55E')
 
                     const titleLower = title.toLowerCase()
                     const bodyLower = (options.body || '').toLowerCase()
@@ -451,7 +595,12 @@ function App(): React.ReactElement {
                         // Request types
                         'message request', 'new request', 'pending request'
                     ]
-                    if (blockPatterns.some(p => combined.includes(p))) return
+                    const matchedBlock = blockPatterns.find(p => combined.includes(p))
+                    if (matchedBlock) {
+                        if (dbg) console.log(`%c[NOTIF-FILTER] ${debugId} ❌ BLOCKED Layer 4: blocklist match '${matchedBlock}'`, 'color: #EF4444', '\n  Combined:', combined)
+                        return
+                    }
+                    if (dbg) console.log(`%c[NOTIF-FILTER] ${debugId} ✅ Layer 4 passed: no blocklist match`, 'color: #22C55E')
 
                     // Layer 5: Positive allowlist — MUST match a chat message pattern
                     // Only let through notifications that look like actual incoming messages
@@ -471,10 +620,24 @@ function App(): React.ReactElement {
                     const isMessengerTag = tag.includes('msg') || tag.includes('thread') ||
                         tag.includes('chat') || tag.includes('mercury')
                     const matchesMessagePattern = messagePatterns.some(p => combined.includes(p))
+                    const matchedPattern = messagePatterns.find(p => combined.includes(p))
+
+                    if (dbg) console.log(
+                        `%c[NOTIF-FILTER] ${debugId} 🔎 Layer 5 check:`,
+                        'color: #F59E0B',
+                        '\n  Tag:', tag || '(none)',
+                        '\n  Is messenger tag:', isMessengerTag,
+                        '\n  Matches message pattern:', matchesMessagePattern, matchedPattern ? `('${matchedPattern}')` : '',
+                        '\n  Body length:', bodyLower.length
+                    )
 
                     // Allow if: has a messenger-specific tag, OR matches a message pattern,
                     // OR body is very short (< 100 chars, likely a chat message preview with no keywords)
-                    if (!isMessengerTag && !matchesMessagePattern && bodyLower.length > 100) return
+                    if (!isMessengerTag && !matchesMessagePattern && bodyLower.length > 100) {
+                        if (dbg) console.log(`%c[NOTIF-FILTER] ${debugId} ❌ BLOCKED Layer 5: no messenger tag, no message pattern, body too long (${bodyLower.length})`, 'color: #EF4444')
+                        return
+                    }
+                    if (dbg) console.log(`%c[NOTIF-FILTER] ${debugId} ✅ Layer 5 passed: ${isMessengerTag ? 'messenger tag' : matchesMessagePattern ? `pattern '${matchedPattern}'` : `short body (${bodyLower.length})`}`, 'color: #22C55E')
 
                     // Final safety: if body contains action verbs that indicate FB activity, block it
                     const actionVerbs = [
@@ -482,11 +645,23 @@ function App(): React.ReactElement {
                         'tagged', 'mentioned', 'invited', 'posted', 'suggested',
                         'followed', 'is following'
                     ]
-                    if (actionVerbs.some(v => bodyLower.includes(v)) && !matchesMessagePattern) return
+                    const matchedVerb = actionVerbs.find(v => bodyLower.includes(v))
+                    if (matchedVerb && !matchesMessagePattern) {
+                        if (dbg) console.log(`%c[NOTIF-FILTER] ${debugId} ❌ BLOCKED Final: action verb '${matchedVerb}' without message pattern`, 'color: #EF4444')
+                        return
+                    }
+
+                    if (dbg) console.log(
+                        `%c[NOTIF-FILTER] ${debugId} ✅✅✅ NOTIFICATION ALLOWED — sending to main process`,
+                        'background: #22C55E; color: white; padding: 2px 6px; border-radius: 3px; font-weight: bold;',
+                        '\n  Title:', title,
+                        '\n  Body:', options.body
+                    )
 
                     window.electron.ipcRenderer.send('show-notification', {
                         title,
-                        body: options.body
+                        body: options.body,
+                        icon: options.icon || undefined
                     })
                 } else if (e.channel === 'unread-count') {
                     const count = e.args[0]
@@ -546,6 +721,8 @@ function App(): React.ReactElement {
 
     // Automated Unsave Injection for Saved Tab
     useEffect(() => {
+        if (!appSettings.unsaveButton) return
+
         const el = webviewRefs.current['saved'];
 
         // Hide Chat Dock on Saved Page
@@ -718,9 +895,27 @@ function App(): React.ReactElement {
                     ))}
 
                     <div className="spacer" style={{ flex: 1 }}></div>
+
+                    {/* Settings button pinned to bottom */}
+                    <div className="nav-item-wrapper">
+                        <button
+                            className={`nav-btn ${showSettings ? 'active' : ''}`}
+                            onClick={() => setShowSettings(!showSettings)}
+                            title="Settings"
+                        >
+                            ⚙️
+                        </button>
+                    </div>
                 </nav>
             </aside>
             <main className="content">
+                {/* Settings Overlay */}
+                <Settings
+                    visible={showSettings}
+                    onClose={() => setShowSettings(false)}
+                    settings={appSettings}
+                    onSettingsChange={setAppSettings}
+                />
                 {/* Update Banner */}
                 {updateInfo && !updateDismissed && (
                     <div className="update-banner">

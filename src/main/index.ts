@@ -1,6 +1,6 @@
 import { app, shell, BrowserWindow, ipcMain, nativeImage, session, Notification, Menu, dialog, net } from 'electron'
 import { join } from 'path'
-import { readFileSync, writeFileSync, createWriteStream, unlinkSync, statSync } from 'fs'
+import { readFileSync, writeFileSync, createWriteStream, unlinkSync, statSync, existsSync } from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { execSync } from 'child_process'
 
@@ -293,30 +293,115 @@ app.whenReady().then(() => {
     }
   })
 
-  ipcMain.on('show-notification', (_event, { title, body }) => {
+  ipcMain.on('show-notification', async (_event, { title, body, icon }) => {
     const win = BrowserWindow.getAllWindows()[0]
-    const notification = new Notification({
+    const settings = loadSettings()
+
+    console.log('[NOTIF-MAIN] 🔔 Received show-notification:', { title, body, hasIcon: !!icon })
+
+    // Check if notifications are enabled in settings
+    if (settings.notifications === false) {
+      console.log('[NOTIF-MAIN] ⏭️ Notifications disabled in settings, skipping')
+      return
+    }
+
+    // Build notification options with native macOS toast support
+    const notifOptions: Electron.NotificationConstructorOptions = {
       title,
       body,
-      silent: false
-    })
+      silent: settings.notificationSound === false,
+      // Use the app icon for the notification
+      icon: nativeImage.createFromPath(join(__dirname, '../../resources/icon.png')),
+      // macOS-specific: sound name for native toast
+      sound: settings.notificationSound === false ? undefined : 'default',
+      // Ensure it shows as a toast banner on macOS
+      urgency: 'normal' as any
+    }
+
+    // If we have a sender icon URL, try to fetch it for the notification
+    if (icon && typeof icon === 'string' && icon.startsWith('http')) {
+      try {
+        const iconResponse = await electronFetch(icon)
+        const chunks: Buffer[] = []
+        await new Promise<void>((resolve, reject) => {
+          iconResponse.on('data', (chunk: Buffer) => chunks.push(chunk))
+          iconResponse.on('end', () => resolve())
+          iconResponse.on('error', reject)
+        })
+        const iconBuffer = Buffer.concat(chunks)
+        const senderIcon = nativeImage.createFromBuffer(iconBuffer)
+        if (!senderIcon.isEmpty()) {
+          notifOptions.icon = senderIcon
+          console.log('[NOTIF-MAIN] 📷 Using sender profile picture for notification')
+        }
+      } catch (e) {
+        console.log('[NOTIF-MAIN] ⚠️ Failed to fetch sender icon, using app icon')
+      }
+    }
+
+    const notification = new Notification(notifOptions)
     notification.show()
+    console.log('[NOTIF-MAIN] ✅ Native toast notification shown')
+
     notification.on('click', () => {
+      console.log('[NOTIF-MAIN] 👆 Notification clicked — focusing window')
       if (win) {
         if (win.isMinimized()) win.restore()
         win.focus()
+        // Switch to messenger tab when clicking notification
+        win.webContents.send('notification-clicked')
       }
     })
 
-    if (win && !win.isFocused() && process.platform === 'darwin') {
+    if (win && !win.isFocused() && process.platform === 'darwin' && settings.dockBounce !== false) {
       app.dock?.bounce('informational')
     }
   })
 
   ipcMain.on('unread-count', (_event, count: number) => {
     if (process.platform === 'darwin') {
-      app.setBadgeCount(count)
+      // Check settings before updating badge
+      const settings = loadSettings()
+      if (settings.badgeCount !== false) {
+        app.setBadgeCount(count)
+      }
     }
+  })
+
+  // --- Settings persistence ---
+  const settingsPath = join(app.getPath('userData'), 'app-settings.json')
+
+  function loadSettings(): Record<string, any> {
+    try {
+      if (existsSync(settingsPath)) {
+        return JSON.parse(readFileSync(settingsPath, 'utf-8'))
+      }
+    } catch {
+      console.log('[SETTINGS] Failed to load settings, using defaults')
+    }
+    return {}
+  }
+
+  function saveSettings(settings: Record<string, any>): void {
+    try {
+      writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf-8')
+      console.log('[SETTINGS] Settings saved:', settings)
+    } catch (e) {
+      console.error('[SETTINGS] Failed to save settings:', e)
+    }
+  }
+
+  ipcMain.handle('get-settings', () => {
+    return loadSettings()
+  })
+
+  ipcMain.handle('save-settings', (_event, settings: Record<string, any>) => {
+    saveSettings(settings)
+    return true
+  })
+
+  ipcMain.handle('get-app-version', () => {
+    return app.getVersion()
   })
 
   ipcMain.handle('get-webview-preload-path', () => {

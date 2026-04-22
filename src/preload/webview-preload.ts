@@ -387,17 +387,20 @@ if (!isMessenger) {
 // 5. Global Link Interceptor - Handle all link clicks
 document.addEventListener('click', (e) => {
   const target = e.target as HTMLElement
-  
+
+  // Skip clicks on our injected zoom buttons — they handle their own IPC
+  if (target.closest('.img-zoom-btn-wrapper') || target.getAttribute('data-zoom')) return
+
   // Find the closest anchor element
   const anchor = target.closest('a') as HTMLAnchorElement
   if (!anchor || !anchor.href) return
-  
+
   const url = anchor.href
   const lowerUrl = url.toLowerCase()
-  
+
   // Skip javascript: and # links
   if (url.startsWith('javascript:') || url.startsWith('#') || url === '') return
-  
+
   // Handle marketplace item links - open in app tab
   if (lowerUrl.includes('/marketplace/item/') ||
       lowerUrl.includes('/marketplace/listing/') ||
@@ -440,3 +443,159 @@ document.addEventListener('click', (e) => {
       ipcRenderer.sendToHost('open-external', url)
   }
 }, true)
+
+// 6. Image Zoom — Marketplace & Marketplace Item pages only
+const isMarketplacePage = window.location.hostname.includes('facebook.com') &&
+  (window.location.pathname.startsWith('/marketplace') ||
+   window.location.pathname.includes('/marketplace/item/'))
+
+if (isMarketplacePage) {
+
+  // Inject CSS for the magnifier button (done once on load)
+  const zoomCSS = `
+    .img-zoom-btn-wrapper {
+      position: absolute !important;
+      top: 6px !important;
+      right: 6px !important;
+      z-index: 9999 !important;
+      pointer-events: auto !important;
+    }
+
+    .img-zoom-btn {
+      width: 32px !important;
+      height: 32px !important;
+      border-radius: 50% !important;
+      background: rgba(0, 0, 0, 0.65) !important;
+      backdrop-filter: blur(4px) !important;
+      border: 1.5px solid rgba(255,255,255,0.25) !important;
+      color: white !important;
+      font-size: 15px !important;
+      cursor: pointer !important;
+      display: flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      opacity: 0 !important;
+      transition: opacity 0.18s ease, transform 0.15s ease, background 0.15s !important;
+      pointer-events: auto !important;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.35) !important;
+      line-height: 1 !important;
+      padding: 0 !important;
+    }
+
+    .img-zoom-btn:hover {
+      background: rgba(8, 102, 255, 0.85) !important;
+      transform: scale(1.1) !important;
+    }
+
+    .img-zoom-parent:hover .img-zoom-btn,
+    .img-zoom-parent.img-zoom-hover .img-zoom-btn {
+      opacity: 1 !important;
+    }
+
+    .img-zoom-parent {
+      position: relative !important;
+    }
+  `
+
+  const styleEl = document.createElement('style')
+  styleEl.textContent = zoomCSS
+  const injectStyle = () => document.head?.appendChild(styleEl)
+  if (document.head) injectStyle()
+  else document.addEventListener('DOMContentLoaded', injectStyle)
+
+  // Track which images we've already processed to avoid duplicates
+  const processedImages = new WeakSet<HTMLImageElement>()
+
+  function attachZoomButton(img: HTMLImageElement) {
+    if (processedImages.has(img)) return
+    const src = img.src || img.getAttribute('src') || ''
+    // Only target Facebook CDN images (scontent) of reasonable size
+    if (!src.includes('scontent') && !src.includes('fbcdn')) return
+    if (img.naturalWidth < 100 && img.width < 100) return  // skip tiny icons
+    // Skip avatars / profile pictures (they're usually circular small images)
+    if (src.includes('profile')) return
+
+    processedImages.add(img)
+
+    // Wrap image in a relative-positioned parent if needed
+    const parent = img.parentElement
+    if (!parent) return
+
+    // Make sure parent can hold an absolute child
+    parent.classList.add('img-zoom-parent')
+
+    // Create wrapper + button
+    const wrapper = document.createElement('div')
+    wrapper.className = 'img-zoom-btn-wrapper'
+
+    const btn = document.createElement('button')
+    btn.className = 'img-zoom-btn'
+    btn.title = 'View full size'
+    btn.innerHTML = '&#128269;'  // 🔍
+    btn.setAttribute('data-zoom', '1')
+
+    btn.addEventListener('click', (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+
+      // Collect all CDN images from the same listing card/container
+      const container = img.closest('[role="article"], [role="main"], [data-visualcompletion], a[href*="marketplace"]')
+        || img.parentElement?.parentElement?.parentElement  // fallback: walk up 3 levels
+        || document.body
+
+      const siblingImgs = Array.from(
+        container.querySelectorAll<HTMLImageElement>('img[src*="scontent"], img[src*="fbcdn"]')
+      ).filter(i => {
+        const s = i.src || ''
+        if (s.includes('profile')) return false
+        if (i.naturalWidth < 80 && i.width < 80) return false
+        return true
+      })
+
+      // Deduplicate by src
+      const seen = new Set<string>()
+      const urls: string[] = []
+      siblingImgs.forEach(i => {
+        const src = i.currentSrc || i.src
+        if (!seen.has(src)) { seen.add(src); urls.push(src) }
+      })
+
+      const currentSrc = img.currentSrc || img.src
+      let index = urls.indexOf(currentSrc)
+      if (index === -1) { urls.unshift(currentSrc); index = 0 }
+
+      ipcRenderer.sendToHost('open-image-zoom', { images: urls, index })
+    })
+
+    wrapper.appendChild(btn)
+    parent.appendChild(wrapper)
+  }
+
+  // Scan for marketplace images and attach zoom buttons
+  function scanImages() {
+    const imgs = document.querySelectorAll<HTMLImageElement>(
+      'img[src*="scontent"], img[src*="fbcdn"]'
+    )
+    imgs.forEach(attachZoomButton)
+  }
+
+  // Initial scan + periodic rescan (FB lazy-loads images)
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => {
+      scanImages()
+      setInterval(scanImages, 2000)
+    })
+  } else {
+    scanImages()
+    setInterval(scanImages, 2000)
+  }
+
+  // Also scan on DOM mutations (new listing cards added)
+  const zoomObserver = new MutationObserver(() => scanImages())
+  const startObserver = () => {
+    const main = document.querySelector('[role="main"]') || document.body
+    if (main) zoomObserver.observe(main, { childList: true, subtree: true })
+  }
+  if (document.body) startObserver()
+  else document.addEventListener('DOMContentLoaded', startObserver)
+}

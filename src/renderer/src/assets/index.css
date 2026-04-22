@@ -420,6 +420,31 @@ nav {
   line-height: 1.4;
 }
 
+/* Action button (e.g. Clear Cache) */
+.settings-action-btn {
+  padding: 6px 16px;
+  border-radius: 6px;
+  border: 1px solid var(--fb-divider);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--fb-text);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.settings-action-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: var(--fb-accent);
+}
+
+.settings-action-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 /* Toggle Switch */
 .toggle-switch {
   position: relative;
@@ -519,4 +544,142 @@ nav {
 .settings-saved-indicator.visible {
   opacity: 1;
   transform: translateY(0) scale(1);
+}
+
+/* ===== Image Zoom Lightbox ===== */
+.zoom-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 900;
+  background: rgba(0, 0, 0, 0.88);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: zoomFadeIn 0.2s ease-out;
+  cursor: zoom-out;
+}
+
+@keyframes zoomFadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.zoom-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: white;
+  font-size: 22px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+  z-index: 10;
+  line-height: 1;
+  padding: 0;
+}
+
+.zoom-close:hover {
+  background: rgba(255, 255, 255, 0.22);
+  transform: scale(1.08);
+}
+
+/* Gallery prev/next arrows */
+.zoom-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: white;
+  font-size: 28px;
+  font-weight: 300;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+  z-index: 10;
+  line-height: 1;
+  padding: 0 0 2px 0;
+  user-select: none;
+}
+
+.zoom-nav:hover {
+  background: rgba(255, 255, 255, 0.22);
+  transform: translateY(-50%) scale(1.08);
+}
+
+.zoom-nav-prev {
+  left: 16px;
+}
+
+.zoom-nav-next {
+  right: 16px;
+}
+
+/* Image counter */
+.zoom-counter {
+  position: absolute;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 13px;
+  font-weight: 500;
+  padding: 5px 14px;
+  border-radius: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  z-index: 10;
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+  letter-spacing: 0.5px;
+}
+
+.zoom-img-wrapper {
+  width: 85vw;
+  height: 85vh;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  cursor: default;
+  animation: zoomImgIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 32px 80px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255,255,255,0.08);
+}
+
+@keyframes zoomImgIn {
+  from {
+    opacity: 0;
+    transform: scale(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.zoom-img-webview {
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: #111;
 }

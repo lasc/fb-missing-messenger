@@ -40,6 +40,10 @@ function App(): React.ReactElement {
     const settingsRef = React.useRef(appSettings)
     useEffect(() => { settingsRef.current = appSettings }, [appSettings])
 
+    // Image zoom lightbox state (gallery mode)
+    const [zoomGallery, setZoomGallery] = useState<{ images: string[]; index: number } | null>(null)
+    const zoomWebviewRef = React.useRef<any>(null)
+
     // Update visited state and timestamp when switching tabs
     const handleTabSwitch = (id: string) => {
         setActiveTabId(id)
@@ -147,7 +151,22 @@ function App(): React.ReactElement {
             handleTabSwitch('messenger')
         })
 
-        return () => { removeListener?.(); removeForceListener?.(); removeNotifClickListener?.() }
+        // Keyboard handlers for lightbox
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') setZoomGallery(null)
+            if (e.key === 'ArrowRight') setZoomGallery(prev =>
+                prev && prev.index < prev.images.length - 1 ? { ...prev, index: prev.index + 1 } : prev
+            )
+            if (e.key === 'ArrowLeft') setZoomGallery(prev =>
+                prev && prev.index > 0 ? { ...prev, index: prev.index - 1 } : prev
+            )
+        }
+        window.addEventListener('keydown', handleKeyDown)
+
+        return () => {
+            removeListener?.(); removeForceListener?.(); removeNotifClickListener?.()
+            window.removeEventListener('keydown', handleKeyDown)
+        }
     }, [])
 
     const handleDismissUpdate = (dontRemind: boolean) => {
@@ -690,6 +709,14 @@ function App(): React.ReactElement {
                     if (url) {
                         window.electron.ipcRenderer.send('open-external-url', url)
                     }
+                } else if (e.channel === 'open-image-zoom') {
+                    const data = e.args[0]
+                    if (data && data.images && data.images.length > 0) {
+                        setZoomGallery({ images: data.images, index: data.index || 0 })
+                    } else if (typeof data === 'string') {
+                        // Backwards compat: single URL string
+                        setZoomGallery({ images: [data], index: 0 })
+                    }
                 }
             }
 
@@ -909,6 +936,83 @@ function App(): React.ReactElement {
                 </nav>
             </aside>
             <main className="content">
+                {/* Image Zoom Lightbox — gallery with prev/next navigation */}
+                {zoomGallery && (
+                    <div
+                        className="zoom-overlay"
+                        onClick={() => setZoomGallery(null)}
+                    >
+                        <button
+                            className="zoom-close"
+                            onClick={() => setZoomGallery(null)}
+                            title="Close (Esc)"
+                        >×</button>
+
+                        {/* Prev arrow */}
+                        {zoomGallery.images.length > 1 && zoomGallery.index > 0 && (
+                            <button
+                                className="zoom-nav zoom-nav-prev"
+                                onClick={(e) => {
+                                    e.stopPropagation()
+                                    setZoomGallery(prev => prev ? { ...prev, index: prev.index - 1 } : prev)
+                                }}
+                                title="Previous image (←)"
+                            >‹</button>
+                        )}
+
+                        {/* Next arrow */}
+                        {zoomGallery.images.length > 1 && zoomGallery.index < zoomGallery.images.length - 1 && (
+                            <button
+                                className="zoom-nav zoom-nav-next"
+                                onClick={(e) => {
+                                    e.stopPropagation()
+                                    setZoomGallery(prev => prev ? { ...prev, index: prev.index + 1 } : prev)
+                                }}
+                                title="Next image (→)"
+                            >›</button>
+                        )}
+
+                        {/* Counter indicator */}
+                        {zoomGallery.images.length > 1 && (
+                            <div className="zoom-counter">
+                                {zoomGallery.index + 1} / {zoomGallery.images.length}
+                            </div>
+                        )}
+
+                        <div className="zoom-img-wrapper" onClick={e => e.stopPropagation()}>
+                            <webview
+                                key={zoomGallery.images[zoomGallery.index]}
+                                ref={zoomWebviewRef}
+                                src={zoomGallery.images[zoomGallery.index]}
+                                partition="persist:webview"
+                                className="zoom-img-webview"
+                                onDomReady={() => {
+                                    const wv = zoomWebviewRef.current
+                                    if (!wv) return
+                                    wv.insertCSS(`
+                                        html, body {
+                                            margin: 0 !important;
+                                            padding: 0 !important;
+                                            background: #111 !important;
+                                            display: flex !important;
+                                            align-items: center !important;
+                                            justify-content: center !important;
+                                            min-height: 100vh !important;
+                                            overflow: hidden !important;
+                                        }
+                                        img {
+                                            max-width: 100vw !important;
+                                            max-height: 100vh !important;
+                                            object-fit: contain !important;
+                                            display: block !important;
+                                        }
+                                    `).catch(() => {})
+                                }}
+                            />
+                        </div>
+                    </div>
+                )}
+
                 {/* Settings Overlay */}
                 <Settings
                     visible={showSettings}
@@ -1007,8 +1111,7 @@ function App(): React.ReactElement {
                                 allowpopups={true}
                                 preload={webviewPreloadPath}
                                 partition="persist:webview"
-                            ></webview>
-
+                            />
                         )
                     ))
                 )}

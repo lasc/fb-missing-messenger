@@ -251,10 +251,11 @@ app.commandLine.appendSwitch('disable-extensions')
 app.commandLine.appendSwitch('enable-gpu-rasterization')
 app.commandLine.appendSwitch('enable-zero-copy')
 app.commandLine.appendSwitch('enable-hardware-overlays', 'single-fullscreen,single-on-top,underlay')
-app.commandLine.appendSwitch('enable-features', 'VaapiVideoDecoder,VaapiVideoEncoder,CanvasOopRasterization')
+app.commandLine.appendSwitch('enable-features', 'VaapiVideoDecoder,VaapiVideoEncoder,CanvasOopRasterization,BackForwardCache')
 // Network performance
 app.commandLine.appendSwitch('enable-quic')
 app.commandLine.appendSwitch('enable-tcp-fastopen')
+app.commandLine.appendSwitch('enable-parallel-downloading')
 
 app.whenReady().then(() => {
   electronApp.setAppUserModelId('com.evame.fbmissingmessenger')
@@ -264,6 +265,74 @@ app.whenReady().then(() => {
   // This keeps cookies, DOM storage, and HTTP cache across restarts
   const webviewSession = session.fromPartition('persist:webview')
   webviewSession.setPreloads([])
+
+  // --- Performance: aggressive HTTP caching ---
+  // Override Cache-Control on Facebook resources so they're served from disk cache
+  // Facebook sends short-lived or no-store headers on static assets which forces re-download
+  webviewSession.webRequest.onHeadersReceived((details, callback) => {
+    const url = details.url.toLowerCase()
+    const headers = details.responseHeaders || {}
+
+    // Facebook CDN static resources (JS, CSS, fonts, images)
+    if (url.includes('fbcdn.net') || url.includes('fbsbx.com') || url.includes('fbpigeon.com')) {
+      // JS, CSS, fonts → cache for 7 days (content-hashed, immutable)
+      if (url.match(/\.(js|css|woff2?|ttf|otf)(\?|$)/i)) {
+        headers['cache-control'] = ['public, max-age=604800, immutable']
+        delete headers['pragma']
+        delete headers['expires']
+      }
+      // Images → cache for 1 day
+      else if (url.match(/\.(jpg|jpeg|png|gif|webp|svg|ico)(\?|$)/i) || url.includes('scontent')) {
+        headers['cache-control'] = ['public, max-age=86400']
+        delete headers['pragma']
+        delete headers['expires']
+      }
+      callback({ responseHeaders: headers })
+      return
+    }
+
+    // Facebook page HTML + API responses → short cache with stale-while-revalidate
+    // This means reopening the same marketplace item serves cached version instantly
+    // while refreshing in the background
+    if (url.includes('facebook.com')) {
+      // Don't cache auth-sensitive pages
+      if (!url.includes('/login') && !url.includes('/checkpoint') && !url.includes('ajax/bz')) {
+        headers['cache-control'] = ['private, max-age=300, stale-while-revalidate=600']
+        delete headers['pragma']
+      }
+      callback({ responseHeaders: headers })
+      return
+    }
+
+    callback({})
+  })
+
+  // --- Performance: DNS prefetch ---
+  // Pre-resolve Facebook domains so there's no DNS delay when opening new pages
+  const prefetchDomains = [
+    'https://www.facebook.com',
+    'https://static.xx.fbcdn.net',
+    'https://scontent.fbcdn.net',
+    'https://z-m-scontent.xx.fbcdn.net',
+    'https://video.xx.fbcdn.net',
+    'https://connect.facebook.net',
+    'https://upload.facebook.com',
+    'https://graph.facebook.com'
+  ]
+  for (const domain of prefetchDomains) {
+    webviewSession.resolveHost(new URL(domain).hostname).catch(() => {})
+  }
+
+  // --- Cache management IPC ---
+  ipcMain.handle('clear-cache', async () => {
+    await webviewSession.clearCache()
+    await webviewSession.clearStorageData({ storages: ['cachestorage'] })
+    return true
+  })
+
+  ipcMain.handle('get-cache-size', async () => {
+    return await webviewSession.getCacheSize()
+  })
   app.setAboutPanelOptions({
     applicationName: 'FB Missing Messenger',
     applicationVersion: app.getVersion(),

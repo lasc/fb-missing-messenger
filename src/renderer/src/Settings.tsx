@@ -140,6 +140,16 @@ export function Settings({ visible, onClose, settings, onSettingsChange }: Setti
                         />
                     </section>
 
+                    {/* Storage Section */}
+                    <section className="settings-section">
+                        <div className="settings-section-header">
+                            <span className="settings-section-icon">💾</span>
+                            <h2 className="settings-section-title">Storage</h2>
+                        </div>
+
+                        <CacheRow />
+                    </section>
+
                     {/* About Section */}
                     <section className="settings-section settings-about">
                         <div className="settings-section-header">
@@ -161,6 +171,48 @@ export function Settings({ visible, onClose, settings, onSettingsChange }: Setti
                     ✓ Saved
                 </div>
             </div>
+        </div>
+    )
+}
+
+// --- Cache Row Component ---
+function CacheRow(): React.ReactElement {
+    const [cacheSize, setCacheSize] = useState<number | null>(null)
+    const [clearing, setClearing] = useState(false)
+
+    const fetchSize = () => {
+        window.electron.ipcRenderer.invoke('get-cache-size').then((size: number) => setCacheSize(size))
+    }
+
+    useEffect(() => { fetchSize() }, [])
+
+    const formatSize = (bytes: number) => {
+        if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`
+        return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+    }
+
+    const handleClear = async () => {
+        setClearing(true)
+        await window.electron.ipcRenderer.invoke('clear-cache')
+        fetchSize()
+        setClearing(false)
+    }
+
+    return (
+        <div className="settings-row">
+            <div className="settings-row-text">
+                <span className="settings-row-label">Cache</span>
+                <span className="settings-row-description">
+                    {cacheSize !== null ? `${formatSize(cacheSize)} used — cached pages, images, scripts & styles` : 'Calculating…'}
+                </span>
+            </div>
+            <button
+                className="settings-action-btn"
+                onClick={handleClear}
+                disabled={clearing}
+            >
+                {clearing ? 'Clearing…' : 'Clear'}
+            </button>
         </div>
     )
 }

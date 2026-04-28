@@ -69,14 +69,11 @@ const updateUnreadCount = () => {
     count = match ? parseInt(match[1], 10) : 0
     source = `old-messenger title="${title}"`
   } else if (isMessengerPage) {
-    // facebook.com/messages: title (N) includes ALL FB notifications.
-    // Instead, count unread indicators in the chat list.
-    // Facebook marks unread chats with a bold/unread indicator dot or bold text.
-    const unreadDots = document.querySelectorAll(
-      '[data-testid="mwthreadlist-item"] [data-visualcompletion="ignore"] span[style*="background"],' +
-      '[aria-label*="unread"]'
-    )
-    // Also try the Messenger-specific navigation badge if available
+    // facebook.com/messages: title (N) includes ALL FB notifications (friend requests,
+    // comments, etc.), NOT just unread messages. We must use DOM-based selectors only.
+    // If none match, default to 0 — a false 0 is better than a false 3.
+
+    // Strategy 1: Look for the Messenger navigation badge (most reliable when present)
     const messengerBadge = document.querySelector(
       '[aria-label="Chats"] [data-visualcompletion="ignore"] span,' +
       'a[href="/messages/"] span[data-visualcompletion="ignore"]'
@@ -87,22 +84,51 @@ const updateUnreadCount = () => {
         count = badgeNum
         source = `messenger-badge text="${messengerBadge.textContent.trim()}"`
       }
-    } else if (unreadDots.length > 0) {
-      count = unreadDots.length
-      source = `unread-dots count=${unreadDots.length}`
-    } else {
-      // Last resort: check the page title, but this may overcount
-      const title = document.title
-      const match = title.match(/\((\d+)\)/)
-      count = match ? parseInt(match[1], 10) : 0
-      source = `title-fallback title="${title}"`
+    }
+
+    // Strategy 2: Count unread indicator dots in the chat list
+    if (count === 0) {
+      const unreadDots = document.querySelectorAll(
+        '[data-testid="mwthreadlist-item"] [data-visualcompletion="ignore"] span[style*="background"],' +
+        '[aria-label*="unread"]'
+      )
+      if (unreadDots.length > 0) {
+        count = unreadDots.length
+        source = `unread-dots count=${unreadDots.length}`
+      }
+    }
+
+    // Strategy 3: Look for bold/unread chat rows (Facebook sometimes uses font-weight)
+    if (count === 0) {
+      const chatRows = document.querySelectorAll('[data-testid="mwthreadlist-item"]')
+      let boldCount = 0
+      chatRows.forEach(row => {
+        // Unread chats typically have a bold sender name
+        const nameEl = row.querySelector('span[dir="auto"]')
+        if (nameEl) {
+          const weight = window.getComputedStyle(nameEl).fontWeight
+          if (weight === 'bold' || weight === '700' || parseInt(weight) >= 600) {
+            boldCount++
+          }
+        }
+      })
+      if (boldCount > 0) {
+        count = boldCount
+        source = `bold-chat-rows count=${boldCount}`
+      }
+    }
+
+    // NO title fallback — title (N) includes all FB notifications, not just messages.
+    // If all DOM strategies fail, count stays at 0.
+    if (count === 0) {
+      source = 'dom-selectors-no-match (title fallback disabled)'
     }
   } else {
-    // Marketplace/Saved: title-based count is fine
-    const title = document.title
-    const match = title.match(/\((\d+)\)/)
-    count = match ? parseInt(match[1], 10) : 0
-    source = `other-page title="${title}"`
+    // Marketplace/Saved pages: do NOT use title-based count.
+    // The page title (N) on facebook.com includes ALL FB notifications,
+    // not page-specific unreads. These pages have no meaningful "unread" concept.
+    count = 0
+    source = 'non-messenger-page (badge disabled)'
   }
 
   if (count !== lastUnreadCount) {
@@ -118,21 +144,26 @@ const updateUnreadCount = () => {
 }
 
 // Observe title changes and DOM mutations for unread tracking
-if (isMessengerPage && !isOldMessenger) {
-  // For facebook.com/messages, poll since the unread indicators are deep in the DOM
-  console.log('[UNREAD] 📡 Starting 3s polling for facebook.com/messages unread count')
-  setInterval(updateUnreadCount, 3000)
-} else {
-  const titleObserver = new MutationObserver(updateUnreadCount)
-  const titleElement = document.querySelector('title')
-  if (titleElement) {
-    console.log('[UNREAD] 👁️ Observing <title> element for changes')
-    titleObserver.observe(titleElement, { childList: true, characterData: true, subtree: true })
+if (isMessengerPage) {
+  if (isOldMessenger) {
+    // Old messenger.com: title is reliable, observe it
+    const titleObserver = new MutationObserver(updateUnreadCount)
+    const titleElement = document.querySelector('title')
+    if (titleElement) {
+      console.log('[UNREAD] 👁️ Observing <title> element for changes (old messenger)')
+      titleObserver.observe(titleElement, { childList: true, characterData: true, subtree: true })
+    } else {
+      console.log('[UNREAD] ⚠️ No <title> element found, falling back to 2s polling')
+      setInterval(updateUnreadCount, 2000)
+    }
   } else {
-    console.log('[UNREAD] ⚠️ No <title> element found, falling back to 2s polling')
-    setInterval(updateUnreadCount, 2000)
+    // facebook.com/messages: poll for DOM-based unread indicators
+    console.log('[UNREAD] 📡 Starting 3s polling for facebook.com/messages unread count (DOM-only, no title fallback)')
+    setInterval(updateUnreadCount, 3000)
   }
 }
+// Non-messenger pages (marketplace, saved): no unread tracking at all.
+// Their title (N) counts are misleading (all FB notifications, not page-specific).
 
 // UI Cleanup for Non-Messenger Pages (Marketplace, generic FB)
 const isMessenger = window.location.hostname.includes('messenger.com') ||

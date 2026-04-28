@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { Settings, AppSettings, DEFAULT_SETTINGS } from './Settings'
+import { NotificationLog, NotifLogEntry } from './NotificationLog'
 
 // Tab definitions
 type TabType = 'messenger' | 'marketplace' | 'saved' | 'marketplace-item'
@@ -43,6 +44,15 @@ function App(): React.ReactElement {
     // Image zoom lightbox state (gallery mode)
     const [zoomGallery, setZoomGallery] = useState<{ images: string[]; index: number } | null>(null)
     const zoomWebviewRef = React.useRef<any>(null)
+
+    // Notification log state
+    const [showNotifLog, setShowNotifLog] = useState(false)
+    const [notifLog, setNotifLog] = useState<NotifLogEntry[]>([])
+    const notifLogRef = React.useRef(notifLog)
+    useEffect(() => { notifLogRef.current = notifLog }, [notifLog])
+
+    // Notification deduplication: track recent notification hashes to suppress duplicates
+    const recentNotifHashes = React.useRef<Map<string, number>>(new Map())
 
     // Update visited state and timestamp when switching tabs
     const handleTabSwitch = (id: string) => {
@@ -532,28 +542,60 @@ function App(): React.ReactElement {
                         '\n  Source Path:', sourcePathname
                     )
 
+                    // Helper to log notification to the in-app log
+                    const logNotif = (verdict: 'allowed' | 'blocked', reason: string, layer?: string) => {
+                        const entry: NotifLogEntry = {
+                            id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                            timestamp: Date.now(),
+                            title: title || '(untitled)',
+                            body: options?.body || '',
+                            tag: options?.tag,
+                            icon: options?.icon,
+                            sourceUrl: sourceUrl || '',
+                            sourcePath: sourcePathname || '',
+                            tabType: tab.type,
+                            tabId: tab.id,
+                            verdict,
+                            reason,
+                            layer
+                        }
+                        setNotifLog(prev => [entry, ...prev].slice(0, 200))
+                    }
+
                     // Check if notifications are disabled in renderer-side settings
                     if (!settingsRef.current.notifications) {
                         if (dbg) console.log(`%c[NOTIF-FILTER] ${debugId} ⏭️ Notifications disabled in settings`, 'color: #F59E0B')
+                        logNotif('blocked', 'Notifications disabled in settings', 'Settings')
                         return
                     }
 
                     // Only show notifications from messenger and marketplace tabs
                     if (tab.type !== 'messenger' && tab.type !== 'marketplace') {
                         if (dbg) console.log(`%c[NOTIF-FILTER] ${debugId} ❌ BLOCKED: tab type is '${tab.type}' (not messenger/marketplace)`, 'color: #EF4444')
+                        logNotif('blocked', `Tab type '${tab.type}' not messenger/marketplace`, 'Tab Filter')
                         return
                     }
 
                     // --- STRICT FILTERING: Block by default, only allow real chat messages ---
 
-                    // Layer 1: Source URL — must originate from /messages path
+                    // Layer 1: Source URL — must originate from correct path for tab type
                     if (tab.type === 'messenger') {
                         const path = sourcePathname || ''
                         if (!path.startsWith('/messages')) {
                             if (dbg) console.log(`%c[NOTIF-FILTER] ${debugId} ❌ BLOCKED Layer 1: source path '${path}' doesn't start with /messages`, 'color: #EF4444')
+                            logNotif('blocked', `Source path '${path}' not /messages`, 'Layer 1: Source Path')
                             return
                         }
                         if (dbg) console.log(`%c[NOTIF-FILTER] ${debugId} ✅ Layer 1 passed: source path OK`, 'color: #22C55E')
+                    }
+                    if (tab.type === 'marketplace') {
+                        const path = sourcePathname || ''
+                        if (!path.startsWith('/marketplace')) {
+                            if (dbg) console.log(`%c[NOTIF-FILTER] ${debugId} ❌ BLOCKED Layer 1: source path '${path}' doesn't start with /marketplace`, 'color: #EF4444')
+                            logNotif('blocked', `Source path '${path}' not /marketplace`, 'Layer 1: Source Path')
+                            return
+                        }
+                        if (dbg) console.log(`%c[NOTIF-FILTER] ${debugId} ✅ Layer 1 passed: marketplace source path OK`, 'color: #22C55E')
                     }
 
                     // Layer 2: Must have BOTH title AND body
@@ -561,6 +603,7 @@ function App(): React.ReactElement {
                     // Most generic Facebook notifications lack a body or have title-only
                     if (!title || !options.body) {
                         if (dbg) console.log(`%c[NOTIF-FILTER] ${debugId} ❌ BLOCKED Layer 2: missing title or body (title=${!!title}, body=${!!options.body})`, 'color: #EF4444')
+                        logNotif('blocked', `Missing ${!title ? 'title' : 'body'}`, 'Layer 2: Title+Body')
                         return
                     }
                     if (dbg) console.log(`%c[NOTIF-FILTER] ${debugId} ✅ Layer 2 passed: has title and body`, 'color: #22C55E')
@@ -568,6 +611,7 @@ function App(): React.ReactElement {
                     // Layer 3: Title length — sender names are short, action descriptions are long
                     if (title.length > 50) {
                         if (dbg) console.log(`%c[NOTIF-FILTER] ${debugId} ❌ BLOCKED Layer 3: title too long (${title.length} chars)`, 'color: #EF4444')
+                        logNotif('blocked', `Title too long (${title.length} chars)`, 'Layer 3: Title Length')
                         return
                     }
                     if (dbg) console.log(`%c[NOTIF-FILTER] ${debugId} ✅ Layer 3 passed: title length OK (${title.length})`, 'color: #22C55E')
@@ -612,11 +656,36 @@ function App(): React.ReactElement {
                         'poked you', 'invited you', 'invite to',
                         'is now friends', 'became friends',
                         // Request types
-                        'message request', 'new request', 'pending request'
+                        'message request', 'new request', 'pending request',
+                        // Marketplace interest / activity (not chat)
+                        'is interested in', 'are interested', 'interested in your',
+                        // Group / community activity
+                        'just joined', 'joined the',
+                        // Timeline activity
+                        'wrote on', 'is celebrating', 'anniversary',
+                        // Engagement bait / suggestions
+                        'check out', 'you might like', "don't miss",
+                        'reminder', "don't forget", 'upcoming',
+                        'trending', 'popular near', 'popular in',
+                        // Generic notification pushes
+                        'notifications for you', 'new from',
+                        'people also', 'others also',
+                        // Typing indicators (should never be native notifs)
+                        'is typing',
+                        // Location-based suggestions
+                        'available in your area', 'near you',
+                        // Prompts & calls-to-action
+                        'what\'s on your mind', 'write something',
+                        'see more', 'view more', 'tap to',
+                        'watch now', 'listen now',
+                        // Commercial / promotional
+                        'discount', 'deal', 'offer', 'promotion',
+                        'update available', 'new feature'
                     ]
                     const matchedBlock = blockPatterns.find(p => combined.includes(p))
                     if (matchedBlock) {
                         if (dbg) console.log(`%c[NOTIF-FILTER] ${debugId} ❌ BLOCKED Layer 4: blocklist match '${matchedBlock}'`, 'color: #EF4444', '\n  Combined:', combined)
+                        logNotif('blocked', `Blocklist match: "${matchedBlock}"`, 'Layer 4: Blocklist')
                         return
                     }
                     if (dbg) console.log(`%c[NOTIF-FILTER] ${debugId} ✅ Layer 4 passed: no blocklist match`, 'color: #22C55E')
@@ -651,12 +720,28 @@ function App(): React.ReactElement {
                     )
 
                     // Allow if: has a messenger-specific tag, OR matches a message pattern,
-                    // OR body is very short (< 100 chars, likely a chat message preview with no keywords)
-                    if (!isMessengerTag && !matchesMessagePattern && bodyLower.length > 100) {
-                        if (dbg) console.log(`%c[NOTIF-FILTER] ${debugId} ❌ BLOCKED Layer 5: no messenger tag, no message pattern, body too long (${bodyLower.length})`, 'color: #EF4444')
+                    // OR body is very short (≤ 30 chars, likely a genuine chat message like "hey" or emoji)
+                    // AND does not contain suspicious Facebook engagement patterns
+                    const suspiciousShortPatterns = [
+                        'notification', 'update', 'new from', 'check', 'see ',
+                        'view ', 'tap ', 'click', 'visit', 'open ',
+                        'available', 'discover', 'explore', 'try ',
+                        'join ', 'follow', 'subscribe', 'watch',
+                        'suggested', 'recommended', 'popular',
+                        'remind', 'upcoming', 'missed', 'trending'
+                    ]
+                    const hasSuspiciousContent = suspiciousShortPatterns.some(p => combined.includes(p))
+                    const isShortBody = bodyLower.length <= 30 && !hasSuspiciousContent
+
+                    if (!isMessengerTag && !matchesMessagePattern && !isShortBody) {
+                        const reason = bodyLower.length > 30
+                            ? `body too long (${bodyLower.length} chars, max 30)`
+                            : `suspicious content in short body`
+                        if (dbg) console.log(`%c[NOTIF-FILTER] ${debugId} ❌ BLOCKED Layer 5: no messenger tag, no message pattern, ${reason}`, 'color: #EF4444')
+                        logNotif('blocked', `No messenger tag, no message pattern, ${reason}`, 'Layer 5: Allowlist')
                         return
                     }
-                    if (dbg) console.log(`%c[NOTIF-FILTER] ${debugId} ✅ Layer 5 passed: ${isMessengerTag ? 'messenger tag' : matchesMessagePattern ? `pattern '${matchedPattern}'` : `short body (${bodyLower.length})`}`, 'color: #22C55E')
+                    if (dbg) console.log(`%c[NOTIF-FILTER] ${debugId} ✅ Layer 5 passed: ${isMessengerTag ? 'messenger tag' : matchesMessagePattern ? `pattern '${matchedPattern}'` : `short clean body (${bodyLower.length})`}`, 'color: #22C55E')
 
                     // Final safety: if body contains action verbs that indicate FB activity, block it
                     const actionVerbs = [
@@ -667,7 +752,26 @@ function App(): React.ReactElement {
                     const matchedVerb = actionVerbs.find(v => bodyLower.includes(v))
                     if (matchedVerb && !matchesMessagePattern) {
                         if (dbg) console.log(`%c[NOTIF-FILTER] ${debugId} ❌ BLOCKED Final: action verb '${matchedVerb}' without message pattern`, 'color: #EF4444')
+                        logNotif('blocked', `Action verb "${matchedVerb}" without message pattern`, 'Layer 6: Action Verbs')
                         return
+                    }
+
+                    // Layer 7: Deduplication — suppress identical notifications within 10 seconds
+                    const notifHash = `${titleLower}::${bodyLower}`
+                    const now = Date.now()
+                    const lastSeen = recentNotifHashes.current.get(notifHash)
+                    if (lastSeen && now - lastSeen < 10000) {
+                        if (dbg) console.log(`%c[NOTIF-FILTER] ${debugId} ❌ BLOCKED Layer 7: duplicate notification (seen ${Math.round((now - lastSeen) / 1000)}s ago)`, 'color: #EF4444')
+                        logNotif('blocked', `Duplicate (seen ${Math.round((now - lastSeen) / 1000)}s ago)`, 'Layer 7: Dedup')
+                        return
+                    }
+                    // Record this notification hash and prune old entries
+                    recentNotifHashes.current.set(notifHash, now)
+                    if (recentNotifHashes.current.size > 50) {
+                        const cutoff = now - 30000
+                        for (const [key, ts] of recentNotifHashes.current) {
+                            if (ts < cutoff) recentNotifHashes.current.delete(key)
+                        }
                     }
 
                     if (dbg) console.log(
@@ -676,6 +780,9 @@ function App(): React.ReactElement {
                         '\n  Title:', title,
                         '\n  Body:', options.body
                     )
+
+                    const allowReason = isMessengerTag ? 'Messenger tag' : matchedPattern ? `Pattern: "${matchedPattern}"` : `Short body (${bodyLower.length} chars)`
+                    logNotif('allowed', allowReason, 'All layers passed')
 
                     window.electron.ipcRenderer.send('show-notification', {
                         title,
@@ -923,6 +1030,17 @@ function App(): React.ReactElement {
 
                     <div className="spacer" style={{ flex: 1 }}></div>
 
+                    {/* Notification log button */}
+                    <div className="nav-item-wrapper">
+                        <button
+                            className={`nav-btn ${showNotifLog ? 'active' : ''}`}
+                            onClick={() => setShowNotifLog(!showNotifLog)}
+                            title="Notification Log"
+                        >
+                            🔔
+                        </button>
+                    </div>
+
                     {/* Settings button pinned to bottom */}
                     <div className="nav-item-wrapper">
                         <button
@@ -1019,6 +1137,14 @@ function App(): React.ReactElement {
                     onClose={() => setShowSettings(false)}
                     settings={appSettings}
                     onSettingsChange={setAppSettings}
+                />
+
+                {/* Notification Log Overlay */}
+                <NotificationLog
+                    visible={showNotifLog}
+                    onClose={() => setShowNotifLog(false)}
+                    entries={notifLog}
+                    onClear={() => setNotifLog([])}
                 />
                 {/* Update Banner */}
                 {updateInfo && !updateDismissed && (

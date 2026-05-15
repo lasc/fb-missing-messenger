@@ -51,6 +51,41 @@ function App(): React.ReactElement {
     const notifLogRef = React.useRef(notifLog)
     useEffect(() => { notifLogRef.current = notifLog }, [notifLog])
 
+    // In-app toast notification state
+    interface ToastNotification {
+        id: string
+        title: string
+        body: string
+        icon?: string
+        timestamp: number
+    }
+    const [toasts, setToasts] = useState<ToastNotification[]>([])
+    const toastTimeoutsRef = React.useRef<Map<string, NodeJS.Timeout>>(new Map())
+
+    // Track whether messenger tab has new unread messages (for icon badge)
+    const [hasUnread, setHasUnread] = useState(false)
+
+    const showToast = (title: string, body: string, icon?: string) => {
+        const id = `toast-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+        const toast: ToastNotification = { id, title, body, icon, timestamp: Date.now() }
+        setToasts(prev => [toast, ...prev].slice(0, 5)) // max 5 toasts
+        // Auto-dismiss after 5 seconds
+        const timeout = setTimeout(() => {
+            setToasts(prev => prev.filter(t => t.id !== id))
+            toastTimeoutsRef.current.delete(id)
+        }, 5000)
+        toastTimeoutsRef.current.set(id, timeout)
+    }
+
+    const dismissToast = (id: string) => {
+        setToasts(prev => prev.filter(t => t.id !== id))
+        const timeout = toastTimeoutsRef.current.get(id)
+        if (timeout) {
+            clearTimeout(timeout)
+            toastTimeoutsRef.current.delete(id)
+        }
+    }
+
     // Notification deduplication: track recent notification hashes to suppress duplicates
     const recentNotifHashes = React.useRef<Map<string, number>>(new Map())
 
@@ -86,11 +121,15 @@ function App(): React.ReactElement {
     const unreadCountsRef = React.useRef<{ [tabId: string]: number }>({})
     const debounceTimerRef = React.useRef<NodeJS.Timeout | null>(null)
     const lastSentCountRef = React.useRef<number>(0)
+    // Notification-based unread count — persists until user clicks messenger tab.
+    // This ensures the dock badge shows even when DOM-based detection reports 0.
+    const notifUnreadRef = React.useRef<number>(0)
 
     const updateAggregatedUnreadCount = () => {
         if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current)
 
-        const total = Object.values(unreadCountsRef.current).reduce((sum, count) => sum + count, 0)
+        const domTotal = Object.values(unreadCountsRef.current).reduce((sum, count) => sum + count, 0)
+        const total = Math.max(domTotal, notifUnreadRef.current)
 
         if (total > lastSentCountRef.current) {
             // Increase: send immediately so badge appears without delay
@@ -100,7 +139,8 @@ function App(): React.ReactElement {
             // Decrease: debounce with longer timeout to avoid flicker
             // (Facebook briefly resets the title during re-renders)
             debounceTimerRef.current = setTimeout(() => {
-                const finalTotal = Object.values(unreadCountsRef.current).reduce((sum, count) => sum + count, 0)
+                const domFinal = Object.values(unreadCountsRef.current).reduce((sum, count) => sum + count, 0)
+                const finalTotal = Math.max(domFinal, notifUnreadRef.current)
                 lastSentCountRef.current = finalTotal
                 window.electron.ipcRenderer.send('unread-count', finalTotal)
             }, 2000)
@@ -159,6 +199,9 @@ function App(): React.ReactElement {
         const removeNotifClickListener = window.electron.ipcRenderer.on('notification-clicked', () => {
             console.log('[NOTIF] Notification clicked — switching to messenger tab')
             handleTabSwitch('messenger')
+            setHasUnread(false)
+            notifUnreadRef.current = 0
+            updateAggregatedUnreadCount()
         })
 
         // Keyboard handlers for lightbox
@@ -576,6 +619,32 @@ function App(): React.ReactElement {
                         return
                     }
 
+                    // Title-detected notifications are pre-validated by our DOM-based
+                    // detector (title count went UP = confirmed new activity).
+                    // Skip the heavy filter pipeline — it was designed for intercepted
+                    // Facebook Notification API calls and blocks legitimate messages.
+                    if (options?.tag === 'title-detection') {
+                        if (dbg) console.log(
+                            `%c[NOTIF-FILTER] ${debugId} ✅ FAST-PASS: title-detected notification (pre-validated)`,
+                            'background: #22C55E; color: white; padding: 2px 6px; border-radius: 3px; font-weight: bold;'
+                        )
+                        logNotif('allowed', 'Title-detected (pre-validated)', 'Fast-pass')
+
+                        showToast(title, options.body, options.icon || undefined)
+                        setHasUnread(true)
+
+                        // Update dock badge with notification-based unread count
+                        notifUnreadRef.current += 1
+                        updateAggregatedUnreadCount()
+
+                        window.electron.ipcRenderer.send('show-notification', {
+                            title,
+                            body: options.body,
+                            icon: options.icon || undefined
+                        })
+                        return
+                    }
+
                     // --- STRICT FILTERING: Block by default, only allow real chat messages ---
 
                     // Layer 1: Source URL — must originate from correct path for tab type
@@ -783,6 +852,14 @@ function App(): React.ReactElement {
 
                     const allowReason = isMessengerTag ? 'Messenger tag' : matchedPattern ? `Pattern: "${matchedPattern}"` : `Short body (${bodyLower.length} chars)`
                     logNotif('allowed', allowReason, 'All layers passed')
+
+                    // Show in-app toast notification (always works, no OS dependency)
+                    showToast(title, options.body, options.icon || undefined)
+
+                    // Set unread indicator on messenger icon and dock badge
+                    setHasUnread(true)
+                    notifUnreadRef.current += 1
+                    updateAggregatedUnreadCount()
 
                     window.electron.ipcRenderer.send('show-notification', {
                         title,
@@ -1014,10 +1091,21 @@ function App(): React.ReactElement {
                         <div key={tab.id} className="nav-item-wrapper">
                             <button
                                 className={`nav-btn ${activeTabId === tab.id ? 'active' : ''}`}
-                                onClick={() => handleTabSwitch(tab.id)}
+                                onClick={() => {
+                                    handleTabSwitch(tab.id)
+                                    // Clear unread indicator and dock badge when switching to messenger
+                                    if (tab.id === 'messenger') {
+                                        setHasUnread(false)
+                                        notifUnreadRef.current = 0
+                                        updateAggregatedUnreadCount()
+                                    }
+                                }}
                                 title={tab.type}
                             >
                                 {tab.icon}
+                                {tab.id === 'messenger' && hasUnread && (
+                                    <span className="nav-unread-badge" />
+                                )}
                             </button>
                             {tab.type === 'marketplace-item' && (
                                 <div
@@ -1054,6 +1142,34 @@ function App(): React.ReactElement {
                 </nav>
             </aside>
             <main className="content">
+                {/* In-app Toast Notifications */}
+                {toasts.length > 0 && (
+                    <div className="toast-container">
+                        {toasts.map(toast => (
+                            <div key={toast.id} className="toast-notification" onClick={() => {
+                                dismissToast(toast.id)
+                                handleTabSwitch('messenger')
+                                setHasUnread(false)
+                            }}>
+                                <div className="toast-icon-area">
+                                    {toast.icon ? (
+                                        <img src={toast.icon} className="toast-avatar" alt="" />
+                                    ) : (
+                                        <span className="toast-icon-fallback">💬</span>
+                                    )}
+                                </div>
+                                <div className="toast-content">
+                                    <div className="toast-title">{toast.title}</div>
+                                    <div className="toast-body">{toast.body}</div>
+                                </div>
+                                <button className="toast-dismiss" onClick={(e) => {
+                                    e.stopPropagation()
+                                    dismissToast(toast.id)
+                                }}>×</button>
+                            </div>
+                        ))}
+                    </div>
+                )}
                 {/* Image Zoom Lightbox — gallery with prev/next navigation */}
                 {zoomGallery && (
                     <div

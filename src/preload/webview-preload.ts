@@ -49,6 +49,96 @@ window.Notification = class extends EventTarget {
   }
 }
 
+// --- ServiceWorker Notification Interception ---
+// Facebook now uses ServiceWorkerRegistration.showNotification() instead of new Notification().
+// We monkey-patch the prototype so those calls are intercepted and forwarded the same way.
+
+// 1. Patch ServiceWorkerRegistration.prototype.showNotification
+if (typeof ServiceWorkerRegistration !== 'undefined') {
+  const origShowNotification = ServiceWorkerRegistration.prototype.showNotification
+  ServiceWorkerRegistration.prototype.showNotification = function (title: string, options?: NotificationOptions): Promise<void> {
+    const payload = {
+      title,
+      options: {
+        body: options?.body,
+        icon: options?.icon,
+        tag: options?.tag,
+        data: options?.data
+      },
+      sourceUrl: window.location.href,
+      sourcePathname: window.location.pathname
+    }
+
+    console.log(
+      '%c[NOTIF-PRELOAD] 🔔 SW showNotification intercepted',
+      'background: #FF6B00; color: white; padding: 2px 6px; border-radius: 3px;',
+      '\n  Title:', title,
+      '\n  Body:', options?.body || '(none)',
+      '\n  Tag:', options?.tag || '(none)',
+      '\n  Icon:', options?.icon ? '(has icon)' : '(no icon)',
+      '\n  Data:', options?.data || '(none)',
+      '\n  Source URL:', window.location.href,
+      '\n  Source Path:', window.location.pathname
+    )
+
+    ipcRenderer.sendToHost('webview-notification', payload)
+
+    // Don't call the original — we handle notifications natively via Electron
+    return Promise.resolve()
+  }
+}
+
+// 2. Patch navigator.serviceWorker.getRegistration(s) to ensure future registrations are also patched
+if (typeof navigator !== 'undefined' && navigator.serviceWorker) {
+  // Wrap getRegistration to patch any returned registration
+  const origGetReg = navigator.serviceWorker.getRegistration.bind(navigator.serviceWorker)
+  navigator.serviceWorker.getRegistration = function (...args: any[]): Promise<ServiceWorkerRegistration | undefined> {
+    return origGetReg(...args).then((reg: ServiceWorkerRegistration | undefined) => {
+      // The prototype is already patched, so any registration will use our override
+      return reg
+    })
+  }
+
+  // Also intercept the 'message' event on the SW container in case Facebook uses
+  // postMessage-based notification triggers from SW to client
+  navigator.serviceWorker.addEventListener('message', (event: MessageEvent) => {
+    const data = event.data
+    if (data && (data.type === 'notification' || data.type === 'NOTIFICATION' || data.firebaseMessaging)) {
+      const title = data.notification?.title || data.title || ''
+      const body = data.notification?.body || data.body || ''
+      const tag = data.notification?.tag || data.tag || ''
+      const icon = data.notification?.icon || data.icon || ''
+
+      if (title) {
+        const payload = {
+          title,
+          options: { body, icon, tag, data: data.data },
+          sourceUrl: window.location.href,
+          sourcePathname: window.location.pathname
+        }
+
+        console.log(
+          '%c[NOTIF-PRELOAD] 🔔 SW postMessage notification intercepted',
+          'background: #DC2626; color: white; padding: 2px 6px; border-radius: 3px;',
+          '\n  Title:', title,
+          '\n  Body:', body || '(none)',
+          '\n  Source:', window.location.pathname
+        )
+
+        ipcRenderer.sendToHost('webview-notification', payload)
+      }
+    }
+  })
+}
+
+// 3. Intercept Push API — prevent push subscription so FB falls back to in-page notifications
+if (typeof PushManager !== 'undefined') {
+  PushManager.prototype.subscribe = function (): Promise<PushSubscription> {
+    console.log('[NOTIF-PRELOAD] ⚡ PushManager.subscribe blocked — using in-page interception instead')
+    return Promise.reject(new DOMException('Push is not supported', 'NotSupportedError'))
+  }
+}
+
 // Unread count tracking
 let lastUnreadCount = -1
 
@@ -86,11 +176,11 @@ const updateUnreadCount = () => {
       }
     }
 
-    // Strategy 2: Count unread indicator dots in the chat list
+    // Strategy 2: Count unread indicator dots ONLY within chat thread items
+    // (removed the broad [aria-label*="unread"] selector which matched general FB notifications)
     if (count === 0) {
       const unreadDots = document.querySelectorAll(
-        '[data-testid="mwthreadlist-item"] [data-visualcompletion="ignore"] span[style*="background"],' +
-        '[aria-label*="unread"]'
+        '[data-testid="mwthreadlist-item"] [data-visualcompletion="ignore"] span[style*="background"]'
       )
       if (unreadDots.length > 0) {
         count = unreadDots.length
@@ -98,25 +188,8 @@ const updateUnreadCount = () => {
       }
     }
 
-    // Strategy 3: Look for bold/unread chat rows (Facebook sometimes uses font-weight)
-    if (count === 0) {
-      const chatRows = document.querySelectorAll('[data-testid="mwthreadlist-item"]')
-      let boldCount = 0
-      chatRows.forEach(row => {
-        // Unread chats typically have a bold sender name
-        const nameEl = row.querySelector('span[dir="auto"]')
-        if (nameEl) {
-          const weight = window.getComputedStyle(nameEl).fontWeight
-          if (weight === 'bold' || weight === '700' || parseInt(weight) >= 600) {
-            boldCount++
-          }
-        }
-      })
-      if (boldCount > 0) {
-        count = boldCount
-        source = `bold-chat-rows count=${boldCount}`
-      }
-    }
+    // Strategy 3 (bold rows) REMOVED — too unreliable, chats stay bold after reading
+    // causing false positive counts.
 
     // NO title fallback — title (N) includes all FB notifications, not just messages.
     // If all DOM strategies fail, count stays at 0.
@@ -125,8 +198,6 @@ const updateUnreadCount = () => {
     }
   } else {
     // Marketplace/Saved pages: do NOT use title-based count.
-    // The page title (N) on facebook.com includes ALL FB notifications,
-    // not page-specific unreads. These pages have no meaningful "unread" concept.
     count = 0
     source = 'non-messenger-page (badge disabled)'
   }
@@ -146,7 +217,6 @@ const updateUnreadCount = () => {
 // Observe title changes and DOM mutations for unread tracking
 if (isMessengerPage) {
   if (isOldMessenger) {
-    // Old messenger.com: title is reliable, observe it
     const titleObserver = new MutationObserver(updateUnreadCount)
     const titleElement = document.querySelector('title')
     if (titleElement) {
@@ -157,10 +227,107 @@ if (isMessengerPage) {
       setInterval(updateUnreadCount, 2000)
     }
   } else {
-    // facebook.com/messages: poll for DOM-based unread indicators
-    console.log('[UNREAD] 📡 Starting 3s polling for facebook.com/messages unread count (DOM-only, no title fallback)')
+    console.log('[UNREAD] 📡 Starting 3s polling for facebook.com/messages unread count (DOM-only)')
     setInterval(updateUnreadCount, 3000)
   }
+}
+
+// === New Message Detection ===
+// Facebook no longer uses the browser Notification API on /messages.
+// Instead, we detect new messages by watching the page title count changes
+// and extracting sender/preview info from the chat list DOM.
+if (isMessengerPage && !isOldMessenger) {
+  let lastDetectedTitleCount = -1
+  let detectionReady = false
+  const notifiedMessages = new Set<string>()
+  let notifCooldownUntil = 0
+
+  function getTitleCount(): number {
+    const match = document.title.match(/\((\d+)\)/)
+    return match ? parseInt(match[1], 10) : 0
+  }
+
+  // Extract sender name and message preview from the top chat thread
+  function getTopChatInfo(): { name: string; preview: string } | null {
+    // Try multiple selectors for the chat thread list
+    const rows = document.querySelectorAll(
+      '[data-testid="mwthreadlist-item"], a[href*="/messages/t/"]'
+    )
+    for (const row of rows) {
+      const spans = row.querySelectorAll('span[dir="auto"]')
+      if (spans.length === 0) continue
+      const name = spans[0]?.textContent?.trim() || ''
+      if (name.length < 1 || name.length > 60) continue
+      // Find preview text (second span with meaningful content)
+      let preview = ''
+      for (let i = 1; i < spans.length; i++) {
+        const text = spans[i]?.textContent?.trim() || ''
+        if (text.length > 2 && text !== name) {
+          preview = text
+          break
+        }
+      }
+      return { name, preview: preview || 'New message' }
+    }
+    return null
+  }
+
+  // Poll title for count changes every 3 seconds
+  setInterval(() => {
+    const count = getTitleCount()
+
+    // Skip the first read — just record the baseline
+    if (!detectionReady) {
+      lastDetectedTitleCount = count
+      detectionReady = true
+      return
+    }
+
+    // Title count went UP → new activity (likely a new message)
+    if (count > lastDetectedTitleCount && Date.now() > notifCooldownUntil) {
+      notifCooldownUntil = Date.now() + 10000 // 10s cooldown
+
+      const chatInfo = getTopChatInfo()
+      const dedupKey = `${chatInfo?.name || ''}::${chatInfo?.preview || ''}`
+
+      // Skip if we already notified about this exact sender+preview combo
+      if (notifiedMessages.has(dedupKey)) {
+        lastDetectedTitleCount = count
+        return
+      }
+      notifiedMessages.add(dedupKey)
+      // Prune old entries
+      if (notifiedMessages.size > 50) {
+        const arr = Array.from(notifiedMessages)
+        for (let i = 0; i < 25; i++) notifiedMessages.delete(arr[i])
+      }
+
+      const payload = {
+        title: chatInfo?.name || 'New Message',
+        options: {
+          body: chatInfo?.preview || 'You have a new message',
+          tag: 'title-detection',
+        },
+        sourceUrl: window.location.href,
+        sourcePathname: window.location.pathname
+      }
+
+      console.log(
+        '%c[MSG-DETECT] 📨 New message detected via title change',
+        'background: #22C55E; color: white; padding: 2px 6px; border-radius: 3px;',
+        '\n  Previous count:', lastDetectedTitleCount,
+        '\n  New count:', count,
+        '\n  Sender:', chatInfo?.name || '(unknown)',
+        '\n  Preview:', chatInfo?.preview || '(none)'
+      )
+
+      ipcRenderer.sendToHost('webview-notification', payload)
+    }
+
+    lastDetectedTitleCount = count
+  }, 3000)
+
+  console.log('[MSG-DETECT] 🔍 Title-based new message detector started for facebook.com/messages')
 }
 // Non-messenger pages (marketplace, saved): no unread tracking at all.
 // Their title (N) counts are misleading (all FB notifications, not page-specific).

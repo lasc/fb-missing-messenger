@@ -266,6 +266,23 @@ app.whenReady().then(() => {
   const webviewSession = session.fromPartition('persist:webview')
   webviewSession.setPreloads([])
 
+  // Grant notification permission for webviews so ServiceWorker notifications work
+  webviewSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+    if (permission === 'notifications') {
+      callback(true)
+      return
+    }
+    callback(false)
+  })
+
+  // Also handle permission check queries (used by Notification.permission and SW push)
+  webviewSession.setPermissionCheckHandler((_webContents, permission) => {
+    if (permission === 'notifications') {
+      return true
+    }
+    return false
+  })
+
   // --- Performance: aggressive HTTP caching ---
   // Override Cache-Control on Facebook resources so they're served from disk cache
   // Facebook sends short-lived or no-store headers on static assets which forces re-download

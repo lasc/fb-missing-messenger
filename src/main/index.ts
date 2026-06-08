@@ -218,6 +218,7 @@ function createWindow(): void {
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
+      contextIsolation: true,
       webviewTag: true
     },
     backgroundColor: '#18191A'
@@ -367,6 +368,10 @@ app.whenReady().then(() => {
   })
 
   ipcMain.handle('perform-update', async (_event, assetUrl: string) => {
+    // Security: only allow downloads from our own GitHub releases
+    if (!assetUrl || !assetUrl.startsWith('https://github.com/lasc/fb-missing-messenger/releases/')) {
+      throw new Error('Invalid update URL — must be a GitHub release asset')
+    }
     const win = BrowserWindow.getAllWindows()[0]
     if (!win) throw new Error('No window found')
     await performUpdate(assetUrl, win)
@@ -374,7 +379,8 @@ app.whenReady().then(() => {
 
   // App IPC handlers (registered once, use dynamic window lookup)
   ipcMain.on('open-external-url', (_event, url: string) => {
-    if (url && (url.startsWith('http://') || url.startsWith('https://'))) {
+    // Security: only allow http(s) URLs, explicitly reject data:, javascript:, file: etc.
+    if (typeof url === 'string' && /^https?:\/\//i.test(url)) {
       shell.openExternal(url)
     }
   })
@@ -404,8 +410,11 @@ app.whenReady().then(() => {
       urgency: 'normal' as any
     }
 
-    // If we have a sender icon URL, try to fetch it for the notification
-    if (icon && typeof icon === 'string' && icon.startsWith('http')) {
+    // If we have a sender icon URL from Facebook CDN, try to fetch it for the notification
+    // Security: only fetch from trusted Facebook CDN domains to prevent SSRF
+    const isTrustedIconUrl = icon && typeof icon === 'string' &&
+      /^https:\/\/[a-z0-9-]+\.(fbcdn\.net|facebook\.com)\//i.test(icon)
+    if (isTrustedIconUrl) {
       try {
         const iconResponse = await electronFetch(icon)
         const chunks: Buffer[] = []

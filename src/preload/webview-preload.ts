@@ -247,7 +247,22 @@ if (isMessengerPage && !isOldMessenger) {
     return match ? parseInt(match[1], 10) : 0
   }
 
-  // Extract sender name and message preview from the top chat thread
+  // Helper to check if a preview was sent by the user themselves (case-insensitive in common languages)
+  function isSelfSentPreview(preview: string): boolean {
+    const previewLower = preview.toLowerCase()
+    const selfPrefixes = [
+      'you:', 'you sent', 'you shared', 'you reacted', 'you liked',
+      'vous:', 'vous avez',
+      'tú:', 'tú enviaste', 'enviaste',
+      'du:', 'du hast',
+      'вы:', 'вы отправили',
+      'você:', 'você enviou',
+      'tu:', 'hai inviato'
+    ]
+    return selfPrefixes.some(p => previewLower.startsWith(p))
+  }
+
+  // Extract sender name and message preview from the top chat thread (skipping self-sent threads)
   function getTopChatInfo(): { name: string; preview: string } | null {
     // Try multiple selectors for the chat thread list
     const rows = document.querySelectorAll(
@@ -267,7 +282,14 @@ if (isMessengerPage && !isOldMessenger) {
           break
         }
       }
-      return { name, preview: preview || 'New message' }
+      
+      const resolvedPreview = preview || 'New message'
+      // Skip if the preview represents a self-sent message
+      if (isSelfSentPreview(resolvedPreview)) {
+        continue
+      }
+
+      return { name, preview: resolvedPreview }
     }
     return null
   }
@@ -288,7 +310,12 @@ if (isMessengerPage && !isOldMessenger) {
       notifCooldownUntil = Date.now() + 10000 // 10s cooldown
 
       const chatInfo = getTopChatInfo()
-      const dedupKey = `${chatInfo?.name || ''}::${chatInfo?.preview || ''}`
+      if (!chatInfo) {
+        lastDetectedTitleCount = count
+        return
+      }
+
+      const dedupKey = `${chatInfo.name}::${chatInfo.preview}`
 
       // Skip if we already notified about this exact sender+preview combo
       if (notifiedMessages.has(dedupKey)) {
@@ -303,9 +330,9 @@ if (isMessengerPage && !isOldMessenger) {
       }
 
       const payload = {
-        title: chatInfo?.name || 'New Message',
+        title: chatInfo.name,
         options: {
-          body: chatInfo?.preview || 'You have a new message',
+          body: chatInfo.preview,
           tag: 'title-detection',
         },
         sourceUrl: window.location.href,
@@ -317,8 +344,8 @@ if (isMessengerPage && !isOldMessenger) {
         'background: #22C55E; color: white; padding: 2px 6px; border-radius: 3px;',
         '\n  Previous count:', lastDetectedTitleCount,
         '\n  New count:', count,
-        '\n  Sender:', chatInfo?.name || '(unknown)',
-        '\n  Preview:', chatInfo?.preview || '(none)'
+        '\n  Sender:', chatInfo.name,
+        '\n  Preview:', chatInfo.preview
       )
 
       ipcRenderer.sendToHost('webview-notification', payload)

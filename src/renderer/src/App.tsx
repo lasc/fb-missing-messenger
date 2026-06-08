@@ -605,6 +605,23 @@ function App(): React.ReactElement {
                         setNotifLog(prev => [entry, ...prev].slice(0, 200))
                     }
 
+                    // Global self-sent message check (case-insensitive prefixes in common languages)
+                    const bodyLower = (options?.body || '').toLowerCase()
+                    const selfPrefixes = [
+                        'you:', 'you sent', 'you shared', 'you reacted', 'you liked',
+                        'vous:', 'vous avez',
+                        'tú:', 'tú enviaste', 'enviaste',
+                        'du:', 'du hast',
+                        'вы:', 'вы отправили',
+                        'você:', 'você enviou',
+                        'tu:', 'hai inviato'
+                    ]
+                    if (selfPrefixes.some(p => bodyLower.startsWith(p))) {
+                        if (dbg) console.log(`%c[NOTIF-FILTER] ${debugId} ❌ BLOCKED: self-sent message (body starts with self prefix)`, 'color: #EF4444')
+                        logNotif('blocked', 'Self-sent message (body prefix)', 'Self-sent Filter')
+                        return
+                    }
+
                     // Check if notifications are disabled in renderer-side settings
                     if (!settingsRef.current.notifications) {
                         if (dbg) console.log(`%c[NOTIF-FILTER] ${debugId} ⏭️ Notifications disabled in settings`, 'color: #F59E0B')
@@ -686,7 +703,6 @@ function App(): React.ReactElement {
                     if (dbg) console.log(`%c[NOTIF-FILTER] ${debugId} ✅ Layer 3 passed: title length OK (${title.length})`, 'color: #22C55E')
 
                     const titleLower = title.toLowerCase()
-                    const bodyLower = (options.body || '').toLowerCase()
                     const combined = `${titleLower} ${bodyLower}`
 
                     // Layer 4: Aggressive blocklist — reject if ANY of these appear in title OR body

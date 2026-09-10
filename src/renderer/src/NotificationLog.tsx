@@ -25,6 +25,15 @@ interface NotificationLogProps {
 
 type FilterMode = 'all' | 'allowed' | 'blocked'
 
+function BellIcon(): React.ReactElement {
+    return (
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9Z" />
+            <path d="M10 21h4" />
+        </svg>
+    )
+}
+
 export function NotificationLog({ visible, onClose, entries, onClear }: NotificationLogProps): React.ReactElement | null {
     const [filter, setFilter] = useState<FilterMode>('all')
     const [expanded, setExpanded] = useState<Set<string>>(new Set())
@@ -50,38 +59,73 @@ export function NotificationLog({ visible, onClose, entries, onClear }: Notifica
     }
 
     return (
-        <div className="settings-overlay">
-            <div className="settings-panel notif-log-panel">
-                <div className="settings-header">
-                    <h1 className="settings-title">Notification Log</h1>
-                    <button className="settings-close" onClick={onClose} title="Close">
+        <div className="settings-overlay" onClick={onClose} role="presentation">
+            <div
+                className="settings-panel notif-log-panel"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="notification-log-title"
+                onClick={(event) => event.stopPropagation()}
+            >
+                <div className="settings-header notif-log-header">
+                    <div className="notif-log-heading">
+                        <span className="notif-log-heading-icon"><BellIcon /></span>
+                        <div className="settings-title-group">
+                            <span className="settings-kicker">Messenger activity</span>
+                            <h1 className="settings-title" id="notification-log-title">Notification Log</h1>
+                        </div>
+                    </div>
+                    <button type="button" className="settings-close" onClick={onClose} aria-label="Close notification log">
                         ×
                     </button>
                 </div>
 
-                {/* Filter bar */}
+                <div className="notif-log-summary" aria-label="Notification totals">
+                    <div className="notif-log-stat">
+                        <span className="notif-log-stat-value">{entries.length}</span>
+                        <span className="notif-log-stat-label">Captured</span>
+                    </div>
+                    <div className="notif-log-stat allowed">
+                        <span className="notif-log-stat-value">{allowedCount}</span>
+                        <span className="notif-log-stat-label">Delivered</span>
+                    </div>
+                    <div className="notif-log-stat blocked">
+                        <span className="notif-log-stat-value">{blockedCount}</span>
+                        <span className="notif-log-stat-label">Filtered</span>
+                    </div>
+                </div>
+
                 <div className="notif-log-toolbar">
-                    <div className="notif-log-filters">
+                    <div className="notif-log-filters" role="tablist" aria-label="Filter notifications">
                         <button
+                            type="button"
                             className={`notif-filter-btn ${filter === 'all' ? 'active' : ''}`}
                             onClick={() => setFilter('all')}
+                            role="tab"
+                            aria-selected={filter === 'all'}
                         >
-                            All ({entries.length})
+                            All
                         </button>
                         <button
+                            type="button"
                             className={`notif-filter-btn notif-filter-allowed ${filter === 'allowed' ? 'active' : ''}`}
                             onClick={() => setFilter('allowed')}
+                            role="tab"
+                            aria-selected={filter === 'allowed'}
                         >
-                            ✅ Allowed ({allowedCount})
+                            <span className="notif-filter-dot" /> Delivered
                         </button>
                         <button
+                            type="button"
                             className={`notif-filter-btn notif-filter-blocked ${filter === 'blocked' ? 'active' : ''}`}
                             onClick={() => setFilter('blocked')}
+                            role="tab"
+                            aria-selected={filter === 'blocked'}
                         >
-                            ❌ Blocked ({blockedCount})
+                            <span className="notif-filter-dot" /> Filtered
                         </button>
                     </div>
-                    <button className="settings-action-btn" onClick={onClear}>
+                    <button type="button" className="settings-action-btn" onClick={onClear} disabled={entries.length === 0}>
                         Clear Log
                     </button>
                 </div>
@@ -90,10 +134,12 @@ export function NotificationLog({ visible, onClose, entries, onClear }: Notifica
                 <div className="notif-log-body">
                     {filtered.length === 0 ? (
                         <div className="notif-log-empty">
-                            <span className="notif-log-empty-icon">🔔</span>
-                            <span>No notifications logged yet.</span>
+                            <span className="notif-log-empty-icon"><BellIcon /></span>
+                            <strong>{entries.length === 0 ? 'No activity yet' : 'Nothing in this filter'}</strong>
                             <span className="notif-log-empty-hint">
-                                Notifications from Facebook will appear here as they come in.
+                                {entries.length === 0
+                                    ? 'Incoming Facebook notifications will appear here as they are evaluated.'
+                                    : 'Choose another filter to see the rest of the activity.'}
                             </span>
                         </div>
                     ) : (
@@ -102,10 +148,19 @@ export function NotificationLog({ visible, onClose, entries, onClear }: Notifica
                                 key={entry.id}
                                 className={`notif-log-entry ${entry.verdict}`}
                                 onClick={() => toggleExpand(entry.id)}
+                                role="button"
+                                tabIndex={0}
+                                aria-expanded={expanded.has(entry.id)}
+                                onKeyDown={(event) => {
+                                    if (event.key === 'Enter' || event.key === ' ') {
+                                        event.preventDefault()
+                                        toggleExpand(entry.id)
+                                    }
+                                }}
                             >
                                 <div className="notif-log-entry-header">
                                     <span className={`notif-log-verdict ${entry.verdict}`}>
-                                        {entry.verdict === 'allowed' ? '✅' : '❌'}
+                                        {entry.verdict === 'allowed' ? '✓' : '×'}
                                     </span>
                                     <div className="notif-log-entry-main">
                                         <span className="notif-log-entry-title">{entry.title}</span>

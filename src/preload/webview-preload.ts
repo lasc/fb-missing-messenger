@@ -227,8 +227,9 @@ if (isMessengerPage) {
       setInterval(updateUnreadCount, 2000)
     }
   } else {
-    console.log('[UNREAD] 📡 Starting 3s polling for facebook.com/messages unread count (DOM-only)')
-    setInterval(updateUnreadCount, 3000)
+    // The title-based message detector below owns the shared 3s heartbeat.
+    // Run once now, then update both signals from that single timer.
+    updateUnreadCount()
   }
 }
 
@@ -263,7 +264,7 @@ if (isMessengerPage && !isOldMessenger) {
   }
 
   // Extract sender name and message preview from the top chat thread (skipping self-sent threads)
-  function getTopChatInfo(): { name: string; preview: string } | null {
+  function getTopChatInfo(): { name: string; preview: string; threadUrl?: string } | null {
     // Try multiple selectors for the chat thread list
     const rows = document.querySelectorAll(
       '[data-testid="mwthreadlist-item"], a[href*="/messages/t/"]'
@@ -289,13 +290,33 @@ if (isMessengerPage && !isOldMessenger) {
         continue
       }
 
-      return { name, preview: resolvedPreview }
+      const anchor = row.matches('a[href*="/messages/t/"]')
+        ? row as HTMLAnchorElement
+        : row.querySelector<HTMLAnchorElement>('a[href*="/messages/t/"]')
+      let threadUrl: string | undefined
+      const href = anchor?.getAttribute('href')
+      if (href) {
+        try {
+          const candidate = new URL(href, window.location.origin)
+          const hostname = candidate.hostname.toLowerCase()
+          const isFacebook = hostname === 'facebook.com' || hostname.endsWith('.facebook.com') ||
+            hostname === 'fb.com' || hostname.endsWith('.fb.com')
+          if (candidate.protocol === 'https:' && isFacebook && candidate.pathname.startsWith('/messages/')) {
+            threadUrl = candidate.toString()
+          }
+        } catch {
+          // Ignore malformed thread links and fall back to the Messenger inbox.
+        }
+      }
+
+      return { name, preview: resolvedPreview, threadUrl }
     }
     return null
   }
 
   // Poll title for count changes every 3 seconds
   setInterval(() => {
+    updateUnreadCount()
     const count = getTitleCount()
 
     // Skip the first read — just record the baseline
@@ -335,7 +356,7 @@ if (isMessengerPage && !isOldMessenger) {
           body: chatInfo.preview,
           tag: 'title-detection',
         },
-        sourceUrl: window.location.href,
+        sourceUrl: chatInfo.threadUrl || window.location.href,
         sourcePathname: window.location.pathname
       }
 
@@ -425,6 +446,8 @@ if (!isMessenger) {
 
   // 3. MutationObserver for Dynamic Content
   const observer = new MutationObserver((mutations) => {
+    if (document.hidden) return
+
     for (const mutation of mutations) {
       mutation.addedNodes.forEach((node) => {
         if (node.nodeType === Node.ELEMENT_NODE) {
@@ -505,8 +528,11 @@ if (!isMessenger) {
       })
   }
 
-  // 4. "Scorched Earth" Interval Check (Geometric & Content)
-  setInterval(() => {
+  // 4. Visibility-aware fallback sweep for elements missed by the observer.
+  // This includes expensive layout reads, so keep it off hidden webviews.
+  const sweepChatOverlays = () => {
+      if (document.hidden) return
+
       // A. Look for "Close chat" buttons and kill their container
       const closeButtons = document.querySelectorAll('[aria-label="Close chat"], [aria-label="Minimize chat"], [aria-label="Open chat"]')
       closeButtons.forEach(btn => {
@@ -606,7 +632,13 @@ if (!isMessenger) {
               }
           }
       })
-  }, 2000)
+  }
+
+  sweepChatOverlays()
+  setInterval(sweepChatOverlays, 5000)
+  document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) sweepChatOverlays()
+  })
 }
 
 // 5. Global Link Interceptor - Handle all link clicks
@@ -796,31 +828,41 @@ if (isMarketplacePage) {
     parent.appendChild(wrapper)
   }
 
-  // Scan for marketplace images and attach zoom buttons
+  // Scan for marketplace images and attach zoom buttons. Facebook mutates the DOM
+  // constantly, so mutation-triggered work is debounced and hidden tabs stay idle.
   function scanImages() {
+    if (document.hidden) return
+
     const imgs = document.querySelectorAll<HTMLImageElement>(
       'img[src*="scontent"], img[src*="fbcdn"]'
     )
     imgs.forEach(attachZoomButton)
   }
 
-  // Initial scan + periodic rescan (FB lazy-loads images)
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => {
+  let zoomScanTimer: number | undefined
+  const scheduleImageScan = () => {
+    if (document.hidden) return
+    if (zoomScanTimer !== undefined) window.clearTimeout(zoomScanTimer)
+    zoomScanTimer = window.setTimeout(() => {
+      zoomScanTimer = undefined
       scanImages()
-      setInterval(scanImages, 2000)
-    })
-  } else {
-    scanImages()
-    setInterval(scanImages, 2000)
+    }, 220)
   }
 
-  // Also scan on DOM mutations (new listing cards added)
-  const zoomObserver = new MutationObserver(() => scanImages())
+  const zoomObserver = new MutationObserver(scheduleImageScan)
   const startObserver = () => {
     const main = document.querySelector('[role="main"]') || document.body
-    if (main) zoomObserver.observe(main, { childList: true, subtree: true })
+    if (!main) return
+    zoomObserver.observe(main, { childList: true, subtree: true })
+    scanImages()
   }
+
   if (document.body) startObserver()
   else document.addEventListener('DOMContentLoaded', startObserver)
+
+  // Low-frequency safety net for lazy-loaded images the observer cannot see.
+  setInterval(scanImages, 10000)
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) scheduleImageScan()
+  })
 }

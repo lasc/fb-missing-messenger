@@ -53,11 +53,20 @@ export function Settings({ visible, onClose, settings, onSettingsChange }: Setti
     if (!visible) return null
 
     return (
-        <div className="settings-overlay">
-            <div className="settings-panel">
+        <div className="settings-overlay" onClick={onClose} role="presentation">
+            <div
+                className="settings-panel"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="settings-title"
+                onClick={(event) => event.stopPropagation()}
+            >
                 <div className="settings-header">
-                    <h1 className="settings-title">Settings</h1>
-                    <button className="settings-close" onClick={onClose} title="Close Settings">
+                    <div className="settings-title-group">
+                        <span className="settings-kicker">FB Missing Messenger</span>
+                        <h1 className="settings-title" id="settings-title">Settings</h1>
+                    </div>
+                    <button type="button" className="settings-close" onClick={onClose} aria-label="Close settings">
                         ×
                     </button>
                 </div>
@@ -207,6 +216,7 @@ function CacheRow(): React.ReactElement {
                 </span>
             </div>
             <button
+                type="button"
                 className="settings-action-btn"
                 onClick={handleClear}
                 disabled={clearing}
@@ -234,10 +244,12 @@ function ToggleRow({ label, description, checked, onChange, disabled }: ToggleRo
                 <span className="settings-row-description">{description}</span>
             </div>
             <button
+                type="button"
                 className={`toggle-switch ${checked ? 'on' : 'off'}`}
                 onClick={() => !disabled && onChange(!checked)}
                 role="switch"
                 aria-checked={checked}
+                aria-label={label}
                 disabled={disabled}
             >
                 <span className="toggle-thumb" />

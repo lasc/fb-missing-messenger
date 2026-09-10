@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, ipcMain, nativeImage, session, Notification, Menu, dialog, net } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, nativeImage, session, Notification, Menu, dialog, net, systemPreferences } from 'electron'
 import { join } from 'path'
 import { readFileSync, writeFileSync, createWriteStream, unlinkSync, statSync, existsSync } from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
@@ -21,6 +21,32 @@ function compareSemver(a: string, b: string): number {
     if ((pa[i] || 0) > (pb[i] || 0)) return 1
   }
   return 0
+}
+
+function isTrustedFacebookUrl(value: unknown): boolean {
+  if (typeof value !== 'string' || !value) return false
+
+  try {
+    const url = new URL(value)
+    const hostname = url.hostname.toLowerCase()
+    const trustedHost = hostname === 'facebook.com' || hostname.endsWith('.facebook.com') ||
+      hostname === 'messenger.com' || hostname.endsWith('.messenger.com') ||
+      hostname === 'fb.com' || hostname.endsWith('.fb.com')
+    return url.protocol === 'https:' && trustedHost
+  } catch {
+    return false
+  }
+}
+
+function getTrustedMessengerUrl(value: unknown): string | undefined {
+  if (!isTrustedFacebookUrl(value)) return undefined
+
+  const url = new URL(value as string)
+  const isMessengerHost = url.hostname === 'messenger.com' || url.hostname.endsWith('.messenger.com')
+  if (!url.pathname.startsWith('/messages') && !(isMessengerHost && url.pathname.startsWith('/t/'))) {
+    return undefined
+  }
+  return url.toString()
 }
 
 function getDismissedVersion(): string | null {
@@ -221,7 +247,7 @@ function createWindow(): void {
       contextIsolation: true,
       webviewTag: true
     },
-    backgroundColor: '#18191A'
+    backgroundColor: '#111318'
   })
 
   if (process.platform === 'darwin') {
@@ -245,7 +271,6 @@ function createWindow(): void {
 }
 
 // Performance optimization flags
-app.commandLine.appendSwitch('js-flags', '--max-old-space-size=256')
 app.commandLine.appendSwitch('renderer-process-limit', '4')
 app.commandLine.appendSwitch('disable-extensions')
 // GPU & rendering acceleration
@@ -265,28 +290,67 @@ app.whenReady().then(() => {
   // Configure persistent session cache for webviews
   // This keeps cookies, DOM storage, and HTTP cache across restarts
   const webviewSession = session.fromPartition('persist:webview')
-  webviewSession.setPreloads([])
 
-  // Grant notification permission for webviews so ServiceWorker notifications work
-  webviewSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+  // Grant only the capabilities the Facebook guest needs. Media access is scoped
+  // to trusted Facebook origins and still requires the native macOS consent prompt.
+  webviewSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
+    const requestUrl = details.requestingUrl || (details as Electron.MediaAccessPermissionRequest).securityOrigin || webContents.getURL()
+
     if (permission === 'notifications') {
-      callback(true)
+      callback(isTrustedFacebookUrl(requestUrl))
       return
     }
+
+    if (permission === 'speaker-selection') {
+      callback(isTrustedFacebookUrl(requestUrl))
+      return
+    }
+
+    if (permission === 'media' && isTrustedFacebookUrl(requestUrl)) {
+      const mediaTypes = (details as Electron.MediaAccessPermissionRequest).mediaTypes || []
+      if (mediaTypes.length === 0 || mediaTypes.some(type => type !== 'audio' && type !== 'video')) {
+        callback(false)
+        return
+      }
+
+      if (process.platform !== 'darwin') {
+        callback(true)
+        return
+      }
+
+      void (async () => {
+        for (const type of Array.from(new Set(mediaTypes))) {
+          const granted = await systemPreferences.askForMediaAccess(type === 'audio' ? 'microphone' : 'camera')
+          if (!granted) {
+            callback(false)
+            return
+          }
+        }
+        callback(true)
+      })().catch(() => callback(false))
+      return
+    }
+
     callback(false)
   })
 
-  // Also handle permission check queries (used by Notification.permission and SW push)
-  webviewSession.setPermissionCheckHandler((_webContents, permission) => {
-    if (permission === 'notifications') {
-      return true
+  // Also handle synchronous capability checks made before the browser requests access.
+  webviewSession.setPermissionCheckHandler((webContents, permission, requestingOrigin, details) => {
+    const requestUrl = details.securityOrigin || details.requestingUrl || requestingOrigin || webContents?.getURL()
+    if (!isTrustedFacebookUrl(requestUrl)) return false
+    if (permission === 'notifications') return true
+    if (permission === 'media') {
+      if (details.mediaType !== 'audio' && details.mediaType !== 'video') return false
+      if (process.platform !== 'darwin') return false
+      const mediaType = details.mediaType === 'audio' ? 'microphone' : 'camera'
+      return systemPreferences.getMediaAccessStatus(mediaType) === 'granted'
     }
     return false
   })
 
-  // --- Performance: aggressive HTTP caching ---
-  // Override Cache-Control on Facebook resources so they're served from disk cache
-  // Facebook sends short-lived or no-store headers on static assets which forces re-download
+  // --- Performance: safe static-asset caching ---
+  // Keep content-hashed CDN assets fast, but preserve Facebook's own cache semantics
+  // for dynamic pages and APIs so conversations and listings never become stale.
   webviewSession.webRequest.onHeadersReceived((details, callback) => {
     const url = details.url.toLowerCase()
     const headers = details.responseHeaders || {}
@@ -304,19 +368,6 @@ app.whenReady().then(() => {
         headers['cache-control'] = ['public, max-age=86400']
         delete headers['pragma']
         delete headers['expires']
-      }
-      callback({ responseHeaders: headers })
-      return
-    }
-
-    // Facebook page HTML + API responses → short cache with stale-while-revalidate
-    // This means reopening the same marketplace item serves cached version instantly
-    // while refreshing in the background
-    if (url.includes('facebook.com')) {
-      // Don't cache auth-sensitive pages
-      if (!url.includes('/login') && !url.includes('/checkpoint') && !url.includes('ajax/bz')) {
-        headers['cache-control'] = ['private, max-age=300, stale-while-revalidate=600']
-        delete headers['pragma']
       }
       callback({ responseHeaders: headers })
       return
@@ -385,11 +436,12 @@ app.whenReady().then(() => {
     }
   })
 
-  ipcMain.on('show-notification', async (_event, { title, body, icon }) => {
+  ipcMain.on('show-notification', async (_event, { title, body, icon, sourceUrl }) => {
     const win = BrowserWindow.getAllWindows()[0]
     const settings = loadSettings()
+    const messengerUrl = getTrustedMessengerUrl(sourceUrl)
 
-    console.log('[NOTIF-MAIN] 🔔 Received show-notification:', { title, body, hasIcon: !!icon })
+    console.log('[NOTIF-MAIN] 🔔 Received show-notification:', { title, body, hasIcon: !!icon, hasConversationUrl: !!messengerUrl })
 
     // Check if notifications are enabled in settings
     if (settings.notifications === false) {
@@ -443,8 +495,8 @@ app.whenReady().then(() => {
       if (win) {
         if (win.isMinimized()) win.restore()
         win.focus()
-        // Switch to messenger tab when clicking notification
-        win.webContents.send('notification-clicked')
+        // Switch to Messenger and, when available, open the exact conversation.
+        win.webContents.send('notification-clicked', { sourceUrl: messengerUrl })
       }
     })
 

@@ -1,18 +1,19 @@
 # FB Missing Messenger
 
-![FB Missing Messenger Showcase](./resources/screenshots/showcase.jpg)
+![FB Missing Messenger v1.3.21 settings and navigation](./resources/screenshots/showcase-v1.3.21.png)
 
 A native wrapper for Messenger and Facebook Marketplace, built for macOS.
 
 ## Features
 
-- **Native Experience**: Standalone Electron app for Messenger and Facebook.
-- **Enhanced Sidebar**: Custom sidebar for quick navigation between Messenger, Marketplace, and Saved items.
+- **Native Experience**: Standalone Electron app for Messenger and Facebook with trusted microphone and camera access for calls.
+- **Enhanced Sidebar**: Fast navigation between Messenger, Marketplace, Saved items, notification history, and settings.
+- **Resilient Conversations**: Exact-chat notification links, offline awareness, automatic tab recovery, and persistent background tabs.
 - **Marketplace Power Tools**:
     - **Tab Management**: Opens listings in new sidebar tabs, preventing duplicates.
     - **Clean UI**: Aggressively hides distractions, chat bubbles, and "Marketplace Assistant" popups.
 - **Saved Items**:
-    - Includes a custom "Unsave" button injector for easier list management.
+    - Reliable custom "Unsave" controls and bulk unsaving for loaded sold items.
 - **macOS Integration**:
     - Native Notifications for messages.
     - Dock badging for unread counts.

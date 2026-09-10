@@ -9,24 +9,430 @@ interface Tab {
     type: TabType
     url: string
     title?: string
-    icon?: string
     hasBeenVisited?: boolean
     lastVisited?: number
 }
 
+interface TabProblem {
+    kind: 'load-failed' | 'crashed'
+    title: string
+    message: string
+}
+
+function normaliseMessengerUrl(value: unknown): string | null {
+    if (typeof value !== 'string' || !value) return null
+
+    try {
+        const url = new URL(value)
+        const hostname = url.hostname.toLowerCase()
+        const isFacebook = hostname === 'facebook.com' || hostname.endsWith('.facebook.com') ||
+            hostname === 'fb.com' || hostname.endsWith('.fb.com')
+        const isMessenger = hostname === 'messenger.com' || hostname.endsWith('.messenger.com')
+        if (url.protocol !== 'https:') return null
+        if (isFacebook && url.pathname.startsWith('/messages')) return url.toString()
+        if (isMessenger && (url.pathname.startsWith('/messages') || url.pathname.startsWith('/t/'))) return url.toString()
+    } catch {
+        // Invalid or untrusted URLs fall back to the Messenger inbox.
+    }
+    return null
+}
+
 const MAX_PRUNABLE_TABS = 5
+
+const UNSAVE_RUNTIME_VERSION = 5
+const UNSAVE_CLEANUP_SCRIPT = `
+    (function() {
+        const runtime = window.__fbmmUnsaveRuntime;
+        if (runtime) {
+            clearInterval(runtime.intervalId);
+            clearTimeout(runtime.scanTimer);
+            runtime.observer?.disconnect();
+            if (runtime.visibilityHandler) {
+                document.removeEventListener('visibilitychange', runtime.visibilityHandler);
+            }
+        }
+        document.querySelectorAll('.custom-unsave-btn, #fbmm-sold-toolbar').forEach(function(element) {
+            element.remove();
+        });
+        document.querySelectorAll('[data-fbmm-position-adjusted]').forEach(function(element) {
+            element.style.removeProperty('position');
+            element.style.removeProperty('overflow');
+            delete element.dataset.fbmmPositionAdjusted;
+        });
+        delete window.__fbmmUnsaveRuntime;
+    })();
+`
+
+const UNSAVE_INJECTION_SCRIPT = `
+    (function() {
+        const RUNTIME_VERSION = ${UNSAVE_RUNTIME_VERSION};
+        const TRIGGER_SELECTOR = [
+            '[aria-label="More options for saved item"]',
+            '[aria-label="Collection options"]',
+            '[aria-label="Actions needed"]'
+        ].join(', ');
+
+        const previousRuntime = window.__fbmmUnsaveRuntime;
+        if (previousRuntime?.version === RUNTIME_VERSION) {
+            previousRuntime.schedule();
+            return;
+        }
+
+        if (previousRuntime) {
+            clearInterval(previousRuntime.intervalId);
+            clearTimeout(previousRuntime.scanTimer);
+            previousRuntime.observer?.disconnect();
+            if (previousRuntime.visibilityHandler) {
+                document.removeEventListener('visibilitychange', previousRuntime.visibilityHandler);
+            }
+        }
+        document.querySelectorAll('.custom-unsave-btn, #fbmm-sold-toolbar').forEach(function(element) {
+            element.remove();
+        });
+
+        const delay = (milliseconds) => new Promise(resolve => setTimeout(resolve, milliseconds));
+        const isVisible = (element) => {
+            if (!element || element.getClientRects().length === 0) return false;
+            const style = getComputedStyle(element);
+            return style.visibility !== 'hidden' && style.display !== 'none';
+        };
+        const normaliseText = (element) => (element.textContent || '')
+            .replace(/\\s+/g, ' ')
+            .trim()
+            .toLowerCase();
+
+        const findCard = (trigger, mainContent) => {
+            const article = trigger.closest('[role="article"]');
+            if (article && article.clientWidth >= 300) return article;
+
+            let node = trigger.parentElement;
+            let fallback = null;
+            while (node && node !== mainContent) {
+                if (node.clientWidth >= 300 && node.querySelectorAll(TRIGGER_SELECTOR).length === 1) {
+                    fallback = node;
+                    const hasContent = node.querySelector('a[href], img, video');
+                    const text = (node.innerText || '').trim();
+                    if (hasContent && text.length > 10) return node;
+                }
+                node = node.parentElement;
+            }
+            return fallback;
+        };
+
+        const collectItems = () => {
+            const mainContent = document.querySelector('[role="main"]');
+            if (!mainContent) return [];
+            const seenCards = new Set();
+            const items = [];
+            Array.from(mainContent.querySelectorAll(TRIGGER_SELECTOR)).forEach(trigger => {
+                if (trigger.closest('[role="banner"], [role="navigation"]')) return;
+                const card = findCard(trigger, mainContent);
+                if (!card || seenCards.has(card) || card.dataset.fbmmUnsaved === 'true') return;
+                seenCards.add(card);
+                items.push({ trigger, card });
+            });
+            return items;
+        };
+
+        const isSoldCard = (card) => {
+            const words = (card.innerText || '').toLowerCase().split(/[^a-z]+/).filter(Boolean);
+            return words.includes('sold');
+        };
+
+        const waitForExactUnsave = async () => {
+            for (let attempt = 0; attempt < 40; attempt += 1) {
+                const options = Array.from(document.querySelectorAll('[role="menuitem"], [role="option"], [role="menu"] [role="button"]'));
+                const match = options.find(option => isVisible(option) && normaliseText(option) === 'unsave');
+                if (match) return match;
+                await delay(50);
+            }
+            return null;
+        };
+
+        const markComplete = (card) => {
+            card.dataset.fbmmUnsaved = 'true';
+            card.style.transition = 'opacity 220ms ease, transform 220ms ease';
+            card.style.opacity = '0';
+            card.style.transform = 'scale(0.985)';
+            card.style.pointerEvents = 'none';
+            setTimeout(() => {
+                if (card.isConnected) card.style.display = 'none';
+            }, 240);
+        };
+
+        const unsaveItem = async (trigger, card) => {
+            try {
+                trigger.click();
+                const unsaveOption = await waitForExactUnsave();
+                if (!unsaveOption) {
+                    trigger.click();
+                    return false;
+                }
+                unsaveOption.click();
+                markComplete(card);
+                await delay(360);
+                return true;
+            } catch (_error) {
+                return false;
+            }
+        };
+
+        const createItemButton = ({ trigger, card }) => {
+            const container = trigger.parentElement;
+            if (!container || container.querySelector('.custom-unsave-btn')) return;
+
+            if (getComputedStyle(container).position === 'static') {
+                container.dataset.fbmmPositionAdjusted = 'true';
+                container.style.position = 'relative';
+                container.style.overflow = 'visible';
+            }
+
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.textContent = 'Unsave';
+            button.className = 'custom-unsave-btn';
+            button.title = 'Remove this item from Saved';
+            Object.assign(button.style, {
+                position: 'absolute',
+                right: '100%',
+                top: '50%',
+                transform: 'translateY(-50%)',
+                marginRight: '8px',
+                zIndex: '999',
+                whiteSpace: 'nowrap',
+                background: '#2b303a',
+                color: '#f2f4f8',
+                border: '1px solid rgba(255,255,255,0.14)',
+                borderRadius: '8px',
+                padding: '6px 10px',
+                fontSize: '13px',
+                lineHeight: '18px',
+                cursor: 'pointer',
+                fontWeight: '600',
+                boxShadow: '0 4px 12px rgba(0,0,0,0.28)'
+            });
+
+            button.addEventListener('mouseenter', () => { button.style.background = '#383e49'; });
+            button.addEventListener('mouseleave', () => {
+                if (!button.disabled) button.style.background = '#2b303a';
+            });
+            button.addEventListener('click', async event => {
+                event.preventDefault();
+                event.stopPropagation();
+                if (button.disabled) return;
+                button.disabled = true;
+                button.textContent = 'Unsaving…';
+                button.style.cursor = 'wait';
+                const success = await unsaveItem(trigger, card);
+                if (success) {
+                    button.textContent = 'Unsaved';
+                    button.style.background = '#166534';
+                    return;
+                }
+                button.textContent = 'Try again';
+                button.style.background = '#7f1d1d';
+                setTimeout(() => {
+                    button.disabled = false;
+                    button.textContent = 'Unsave';
+                    button.style.background = '#2b303a';
+                    button.style.cursor = 'pointer';
+                }, 1600);
+            });
+            container.appendChild(button);
+        };
+
+        const updateSoldToolbar = (items) => {
+            const soldItems = items.filter(item => isSoldCard(item.card));
+            let toolbar = document.getElementById('fbmm-sold-toolbar');
+            if (soldItems.length === 0) {
+                toolbar?.remove();
+                return;
+            }
+
+            if (!toolbar) {
+                toolbar = document.createElement('div');
+                toolbar.id = 'fbmm-sold-toolbar';
+                toolbar.setAttribute('role', 'region');
+                toolbar.setAttribute('aria-label', 'Sold saved items');
+                Object.assign(toolbar.style, {
+                    position: 'fixed',
+                    left: '18px',
+                    bottom: '18px',
+                    zIndex: '2147483000',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '12px',
+                    padding: '10px 11px 10px 14px',
+                    color: '#f2f4f8',
+                    background: 'rgba(28,31,38,0.96)',
+                    border: '1px solid rgba(255,255,255,0.12)',
+                    borderRadius: '12px',
+                    boxShadow: '0 12px 34px rgba(0,0,0,0.38)',
+                    fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif',
+                    fontSize: '13px',
+                    backdropFilter: 'blur(16px)'
+                });
+                const label = document.createElement('span');
+                label.className = 'fbmm-sold-label';
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.className = 'fbmm-unsave-sold-btn';
+                button.textContent = 'Unsave sold';
+                Object.assign(button.style, {
+                    padding: '7px 11px',
+                    color: 'white',
+                    background: '#b4232c',
+                    border: '1px solid rgba(255,255,255,0.12)',
+                    borderRadius: '8px',
+                    font: '600 12px -apple-system, BlinkMacSystemFont, sans-serif',
+                    cursor: 'pointer'
+                });
+                button.addEventListener('click', async event => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    const currentSoldItems = collectItems().filter(item => isSoldCard(item.card));
+                    if (currentSoldItems.length === 0) {
+                        schedule();
+                        return;
+                    }
+                    const confirmed = window.confirm(
+                        'Unsave ' + currentSoldItems.length + ' sold item' + (currentSoldItems.length === 1 ? '' : 's') + ' currently loaded on this page?'
+                    );
+                    if (!confirmed) return;
+
+                    button.disabled = true;
+                    button.style.cursor = 'wait';
+                    let completed = 0;
+                    let failed = 0;
+                    for (const item of currentSoldItems) {
+                        label.textContent = 'Unsaving ' + (completed + failed + 1) + ' of ' + currentSoldItems.length + '…';
+                        const success = await unsaveItem(item.trigger, item.card);
+                        if (success) completed += 1;
+                        else failed += 1;
+                        await delay(240);
+                    }
+                    label.textContent = failed === 0
+                        ? completed + ' sold item' + (completed === 1 ? '' : 's') + ' unsaved'
+                        : completed + ' unsaved · ' + failed + ' need retry';
+                    button.textContent = failed === 0 ? 'Done' : 'Retry failed';
+                    button.disabled = failed === 0;
+                    button.style.cursor = failed === 0 ? 'default' : 'pointer';
+                    if (failed > 0) schedule();
+                    else setTimeout(() => toolbar?.remove(), 2200);
+                });
+                toolbar.append(label, button);
+                document.body.appendChild(toolbar);
+            }
+
+            const label = toolbar.querySelector('.fbmm-sold-label');
+            const button = toolbar.querySelector('.fbmm-unsave-sold-btn');
+            if (label && button && !button.disabled) {
+                label.textContent = soldItems.length + ' sold item' + (soldItems.length === 1 ? '' : 's') + ' loaded';
+                button.textContent = 'Unsave sold';
+            }
+        };
+
+        const scan = () => {
+            if (document.hidden) return;
+            const items = collectItems();
+            items.forEach(createItemButton);
+            updateSoldToolbar(items);
+        };
+
+        let scanTimer;
+        const schedule = () => {
+            if (document.hidden) return;
+            if (scanTimer) return;
+            scanTimer = setTimeout(() => {
+                scanTimer = undefined;
+                if (window.__fbmmUnsaveRuntime) window.__fbmmUnsaveRuntime.scanTimer = undefined;
+                scan();
+            }, 220);
+            if (window.__fbmmUnsaveRuntime) window.__fbmmUnsaveRuntime.scanTimer = scanTimer;
+        };
+        const observer = new MutationObserver(schedule);
+        const mainContent = document.querySelector('[role="main"]') || document.body;
+        observer.observe(mainContent, { childList: true, subtree: true });
+        const intervalId = setInterval(schedule, 10000);
+        const visibilityHandler = () => { if (!document.hidden) schedule(); };
+        document.addEventListener('visibilitychange', visibilityHandler);
+        window.__fbmmUnsaveRuntime = {
+            version: RUNTIME_VERSION,
+            observer,
+            intervalId,
+            scanTimer,
+            schedule,
+            visibilityHandler
+        };
+        schedule();
+    })();
+`
+
+type NavIconKind = TabType | 'back' | 'notifications' | 'settings'
+
+function NavIcon({ kind }: { kind: NavIconKind }): React.ReactElement {
+    const common = {
+        width: 21,
+        height: 21,
+        viewBox: '0 0 24 24',
+        fill: 'none',
+        stroke: 'currentColor',
+        strokeWidth: 1.9,
+        strokeLinecap: 'round' as const,
+        strokeLinejoin: 'round' as const,
+        'aria-hidden': true
+    }
+
+    if (kind === 'messenger') {
+        return <svg {...common}><path d="M21 11.5a8.4 8.4 0 0 1-9 8.5 9.9 9.9 0 0 1-2.7-.38L4 21l1.45-4.23A8.14 8.14 0 0 1 3 11.5 8.4 8.4 0 0 1 12 3a8.4 8.4 0 0 1 9 8.5Z" /><path d="m7.6 13.7 3-3.2 2.35 2 3.45-3.7-3 6.5-2.35-2-3.45 2.1Z" /></svg>
+    }
+    if (kind === 'marketplace') {
+        return <svg {...common}><path d="M4 10v10h16V10" /><path d="M3 10h18l-1.5-6h-15L3 10Z" /><path d="M7 10v1a2 2 0 0 0 4 0v-1m0 0v1a2 2 0 0 0 4 0v-1m0 0v1a2 2 0 0 0 4 0v-1M9 20v-5h6v5" /></svg>
+    }
+    if (kind === 'saved') {
+        return <svg {...common}><path d="M6.5 4.5A1.5 1.5 0 0 1 8 3h8a1.5 1.5 0 0 1 1.5 1.5V21L12 17.5 6.5 21V4.5Z" /></svg>
+    }
+    if (kind === 'marketplace-item') {
+        return <svg {...common}><path d="m4 7 8-4 8 4-8 4-8-4Z" /><path d="m4 7 8 4 8-4v10l-8 4-8-4V7Z" /><path d="M12 11v10" /></svg>
+    }
+    if (kind === 'notifications') {
+        return <svg {...common}><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9Z" /><path d="M10 21h4" /></svg>
+    }
+    if (kind === 'settings') {
+        return <svg {...common}><circle cx="12" cy="12" r="3" /><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.09a2 2 0 0 1 1 1.74v.5a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2Z" /></svg>
+    }
+    return <svg {...common}><path d="m14.5 18-6-6 6-6" /></svg>
+}
+
+function getTabLabel(tab: Tab): string {
+    if (tab.type === 'messenger') return 'Messenger'
+    if (tab.type === 'marketplace') return 'Marketplace'
+    if (tab.type === 'saved') return 'Saved items'
+    return tab.title || 'Marketplace item'
+}
 
 function App(): React.ReactElement {
     const [tabs, setTabs] = useState<Tab[]>(() => {
         const initialTabs: Tab[] = [
-            { id: 'messenger', type: 'messenger', url: 'https://www.facebook.com/messages/', icon: '💬', hasBeenVisited: true, lastVisited: Date.now() },
-            { id: 'marketplace', type: 'marketplace', url: 'https://www.facebook.com/marketplace/', icon: '🏪', hasBeenVisited: true, lastVisited: Date.now() - 1 },
-            { id: 'saved', type: 'saved', url: 'https://www.facebook.com/saved/', icon: '🔖', hasBeenVisited: true, lastVisited: Date.now() - 2 }
+            { id: 'messenger', type: 'messenger', url: 'https://www.facebook.com/messages/', hasBeenVisited: true, lastVisited: Date.now() },
+            { id: 'marketplace', type: 'marketplace', url: 'https://www.facebook.com/marketplace/', hasBeenVisited: false, lastVisited: Date.now() - 1 },
+            { id: 'saved', type: 'saved', url: 'https://www.facebook.com/saved/', hasBeenVisited: false, lastVisited: Date.now() - 2 }
         ]
         return initialTabs
     })
     const [activeTabId, setActiveTabId] = useState<string>('messenger')
     const [webviewPreloadPath, setWebviewPreloadPath] = useState<string>('')
+    const webviewRefs = React.useRef<{ [key: string]: any }>({})
+
+    // Guest resilience state. Problems are tracked per tab so a background failure
+    // does not interrupt the conversation the user is currently reading.
+    const [isOnline, setIsOnline] = useState(() => navigator.onLine)
+    const onlineRef = React.useRef(navigator.onLine)
+    const [tabProblems, setTabProblems] = useState<Record<string, TabProblem | undefined>>({})
+    const tabProblemsRef = React.useRef(tabProblems)
+    const recoveryTimersRef = React.useRef<Map<string, NodeJS.Timeout>>(new Map())
+    const recoveryAttemptsRef = React.useRef<Map<string, number>>(new Map())
+    useEffect(() => { tabProblemsRef.current = tabProblems }, [tabProblems])
 
     // Update checker state
     const [updateInfo, setUpdateInfo] = useState<{ latestVersion: string; assetUrl: string; releaseName: string } | null>(null)
@@ -57,6 +463,7 @@ function App(): React.ReactElement {
         title: string
         body: string
         icon?: string
+        sourceUrl?: string
         timestamp: number
     }
     const [toasts, setToasts] = useState<ToastNotification[]>([])
@@ -65,9 +472,9 @@ function App(): React.ReactElement {
     // Track whether messenger tab has new unread messages (for icon badge)
     const [hasUnread, setHasUnread] = useState(false)
 
-    const showToast = (title: string, body: string, icon?: string) => {
+    const showToast = (title: string, body: string, icon?: string, sourceUrl?: string) => {
         const id = `toast-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
-        const toast: ToastNotification = { id, title, body, icon, timestamp: Date.now() }
+        const toast: ToastNotification = { id, title, body, icon, sourceUrl, timestamp: Date.now() }
         setToasts(prev => [toast, ...prev].slice(0, 5)) // max 5 toasts
         // Auto-dismiss after 5 seconds
         const timeout = setTimeout(() => {
@@ -92,14 +499,120 @@ function App(): React.ReactElement {
     // Update visited state and timestamp when switching tabs
     const handleTabSwitch = (id: string) => {
         setActiveTabId(id)
+        setShowSettings(false)
+        setShowNotifLog(false)
         setTabs(prev => prev.map(t =>
             t.id === id ? { ...t, hasBeenVisited: true, lastVisited: Date.now() } : t
         ))
     }
 
+    const openMessengerDestination = (sourceUrl?: unknown) => {
+        handleTabSwitch('messenger')
+        const targetUrl = normaliseMessengerUrl(sourceUrl)
+        if (!targetUrl) return
+
+        // The Messenger webview stays alive in the background, so this is an
+        // in-place navigation instead of an expensive remount.
+        const messenger = webviewRefs.current.messenger
+        if (!messenger || messenger.getURL?.() === targetUrl) return
+        Promise.resolve(messenger.loadURL(targetUrl)).catch(() => {})
+    }
+
+    const clearRecoveryTimer = (tabId: string) => {
+        const timer = recoveryTimersRef.current.get(tabId)
+        if (timer) clearTimeout(timer)
+        recoveryTimersRef.current.delete(tabId)
+    }
+
+    const setTabProblem = (tabId: string, problem: TabProblem) => {
+        tabProblemsRef.current = { ...tabProblemsRef.current, [tabId]: problem }
+        setTabProblems(tabProblemsRef.current)
+    }
+
+    const clearTabProblem = (tabId: string) => {
+        clearRecoveryTimer(tabId)
+        recoveryAttemptsRef.current.delete(tabId)
+        if (!tabProblemsRef.current[tabId]) return
+        const next = { ...tabProblemsRef.current }
+        delete next[tabId]
+        tabProblemsRef.current = next
+        setTabProblems(next)
+    }
+
+    const scheduleTabRecovery = (tabId: string) => {
+        if (!onlineRef.current || recoveryTimersRef.current.has(tabId)) return
+        const attempt = recoveryAttemptsRef.current.get(tabId) || 0
+        const delays = [1200, 3500, 8000]
+        if (attempt >= delays.length) return
+
+        recoveryAttemptsRef.current.set(tabId, attempt + 1)
+        const timer = setTimeout(() => {
+            recoveryTimersRef.current.delete(tabId)
+            if (!onlineRef.current) return
+            const problem = tabProblemsRef.current[tabId]
+            if (problem) {
+                setTabProblem(tabId, { ...problem, message: 'Reconnecting…' })
+            }
+            try {
+                webviewRefs.current[tabId]?.reload()
+            } catch {
+                scheduleTabRecovery(tabId)
+            }
+        }, delays[attempt])
+        recoveryTimersRef.current.set(tabId, timer)
+    }
+
+    const retryTab = (tabId: string) => {
+        if (!onlineRef.current) return
+        clearRecoveryTimer(tabId)
+        recoveryAttemptsRef.current.set(tabId, 0)
+        const problem = tabProblemsRef.current[tabId]
+        if (problem) setTabProblem(tabId, { ...problem, message: 'Reconnecting…' })
+        try {
+            webviewRefs.current[tabId]?.reload()
+        } catch {
+            scheduleTabRecovery(tabId)
+        }
+    }
+
+    useEffect(() => {
+        const handleOnline = () => {
+            onlineRef.current = true
+            setIsOnline(true)
+            Object.keys(tabProblemsRef.current).forEach(tabId => {
+                recoveryAttemptsRef.current.set(tabId, 0)
+                scheduleTabRecovery(tabId)
+            })
+        }
+        const handleOffline = () => {
+            onlineRef.current = false
+            setIsOnline(false)
+            recoveryTimersRef.current.forEach(clearTimeout)
+            recoveryTimersRef.current.clear()
+        }
+
+        window.addEventListener('online', handleOnline)
+        window.addEventListener('offline', handleOffline)
+        return () => {
+            window.removeEventListener('online', handleOnline)
+            window.removeEventListener('offline', handleOffline)
+            recoveryTimersRef.current.forEach(clearTimeout)
+            recoveryTimersRef.current.clear()
+        }
+    }, [])
+
     // Keep tabsRef in sync so event handlers always see latest tabs
     const tabsRef = React.useRef(tabs)
     useEffect(() => { tabsRef.current = tabs }, [tabs])
+
+    // Warm heavy background tabs one at a time after Messenger has settled.
+    // This keeps startup responsive without sacrificing instant later switches.
+    const prewarmScheduledRef = React.useRef(false)
+    const prewarmTimersRef = React.useRef<NodeJS.Timeout[]>([])
+    useEffect(() => () => {
+        prewarmTimersRef.current.forEach(clearTimeout)
+        prewarmTimersRef.current = []
+    }, [])
 
     // Tab Pruning Logic: Keep only N most recently visited marketplace items
     useEffect(() => {
@@ -110,7 +623,10 @@ function App(): React.ReactElement {
             const pruneIds = new Set(tabsToPrune.map(t => t.id).filter(id => id !== activeTabId))
 
             if (pruneIds.size > 0) {
-                pruneIds.forEach(id => delete unreadCountsRef.current[id])
+                pruneIds.forEach(id => {
+                    delete unreadCountsRef.current[id]
+                    clearTabProblem(id)
+                })
                 updateAggregatedUnreadCount()
                 setTabs(prev => prev.filter(t => !pruneIds.has(t.id)))
             }
@@ -195,10 +711,10 @@ function App(): React.ReactElement {
             setUpdateStage('idle')
         })
 
-        // Listen for notification click — switch to messenger tab
-        const removeNotifClickListener = window.electron.ipcRenderer.on('notification-clicked', () => {
-            console.log('[NOTIF] Notification clicked — switching to messenger tab')
-            handleTabSwitch('messenger')
+        // Listen for notification click — switch to Messenger and open the exact thread when known.
+        const removeNotifClickListener = window.electron.ipcRenderer.on('notification-clicked', (_event: any, data: any) => {
+            console.log('[NOTIF] Notification clicked — opening Messenger destination')
+            openMessengerDestination(data?.sourceUrl)
             setHasUnread(false)
             notifUnreadRef.current = 0
             updateAggregatedUnreadCount()
@@ -206,7 +722,11 @@ function App(): React.ReactElement {
 
         // Keyboard handlers for lightbox
         const handleKeyDown = (e: KeyboardEvent) => {
-            if (e.key === 'Escape') setZoomGallery(null)
+            if (e.key === 'Escape') {
+                setZoomGallery(null)
+                setShowSettings(false)
+                setShowNotifLog(false)
+            }
             if (e.key === 'ArrowRight') setZoomGallery(prev =>
                 prev && prev.index < prev.images.length - 1 ? { ...prev, index: prev.index + 1 } : prev
             )
@@ -237,11 +757,16 @@ function App(): React.ReactElement {
         })
     }
 
-    // Refs for webviews (using a map)
-    const webviewRefs = React.useRef<{ [key: string]: any }>({})
-
     // Refs for event handlers so removeEventListener works with the exact same reference
-    const handlersRef = React.useRef<Map<string, { newWindow: any; willNavigate: any; domReady: any; ipcMessage: any }>>(new Map())
+    const handlersRef = React.useRef<Map<string, {
+        newWindow: any
+        willNavigate: any
+        domReady: any
+        didFinishLoad: any
+        ipcMessage: any
+        didFailLoad: any
+        renderProcessGone: any
+    }>>(new Map())
 
     // Function to open new marketplace item — uses functional setTabs for atomic dedup
     const openMarketplaceItem = (url: string) => {
@@ -263,7 +788,6 @@ function App(): React.ReactElement {
                 id,
                 type: 'marketplace-item' as TabType,
                 url,
-                icon: '📦',
                 hasBeenVisited: true,
                 lastVisited: Date.now()
             }]
@@ -275,6 +799,7 @@ function App(): React.ReactElement {
         e.stopPropagation()
         setTabs(prev => prev.filter(t => t.id !== id))
         delete unreadCountsRef.current[id]
+        clearTabProblem(id)
         updateAggregatedUnreadCount()
 
         if (activeTabId === id) {
@@ -378,6 +903,12 @@ function App(): React.ReactElement {
         }
     `
 
+    // Only rebuild guest listeners when a webview is mounted, removed, or changes URL.
+    // lastVisited updates on every switch and must not churn native event listeners.
+    const webviewLifecycleKey = tabs
+        .map(tab => `${tab.id}:${tab.url}:${tab.hasBeenVisited ? 1 : 0}`)
+        .join('|')
+
     // Attach events manually for all webviews — uses stored handler refs for proper cleanup
     useEffect(() => {
         tabs.forEach(tab => {
@@ -390,7 +921,10 @@ function App(): React.ReactElement {
                 el.removeEventListener('new-window', oldHandlers.newWindow)
                 el.removeEventListener('will-navigate', oldHandlers.willNavigate)
                 el.removeEventListener('dom-ready', oldHandlers.domReady)
+                el.removeEventListener('did-finish-load', oldHandlers.didFinishLoad)
                 el.removeEventListener('ipc-message', oldHandlers.ipcMessage)
+                el.removeEventListener('did-fail-load', oldHandlers.didFailLoad)
+                el.removeEventListener('render-process-gone', oldHandlers.renderProcessGone)
             }
 
             const handleNewWindow = (e: any) => {
@@ -457,6 +991,23 @@ function App(): React.ReactElement {
             }
 
             const handleDomReady = () => {
+                if (tab.type === 'messenger' && !prewarmScheduledRef.current) {
+                    prewarmScheduledRef.current = true
+
+                    const warmTab = (tabId: string) => {
+                        setTabs(prev => prev.map(candidate =>
+                            candidate.id === tabId && !candidate.hasBeenVisited
+                                ? { ...candidate, hasBeenVisited: true }
+                                : candidate
+                        ))
+                    }
+
+                    prewarmTimersRef.current.push(
+                        setTimeout(() => warmTab('marketplace'), 3000),
+                        setTimeout(() => warmTab('saved'), 6000)
+                    )
+                }
+
                 // Only inject chat-hiding CSS if setting is enabled
                 if (settingsRef.current.hideChatBubbles) {
                     try {
@@ -502,71 +1053,45 @@ function App(): React.ReactElement {
                     try {
                         el.insertCSS(facebookChromeCSS);
                     } catch (e) { }
-
-                    // JS-based chat killer — catches elements where Facebook sets styles via JS
-                    // (not as inline style attributes), which CSS attribute selectors can't target
-                    try {
-                        const chatKillerScript = `
-                            (function() {
-                                function killChats() {
-                                    // Kill by aria-label
-                                    var chatLabels = ['Close chat','Minimize chat','Open chat','Chat tab',
-                                        'Chat conversation','Messenger overlay','Chats','New message','New Message'];
-                                    chatLabels.forEach(function(label) {
-                                        document.querySelectorAll('[aria-label="' + label + '"]').forEach(function(el) {
-                                            var r = el.getAttribute('role') || '';
-                                            if (r !== 'main' && r !== 'navigation') {
-                                                // Walk up to find the top-level chat container
-                                                var target = el.closest('[role="dialog"]') || el.closest('[role="region"]');
-                                                if (!target) {
-                                                    var p = el;
-                                                    for (var d = 0; p && d < 20; d++) {
-                                                        var cs = window.getComputedStyle(p);
-                                                        if (cs.position === 'fixed' || cs.position === 'absolute') {
-                                                            target = p;
-                                                            break;
-                                                        }
-                                                        p = p.parentElement;
-                                                    }
-                                                }
-                                                if (target) {
-                                                    target.style.display = 'none';
-                                                    target.remove();
-                                                } else {
-                                                    el.style.display = 'none';
-                                                    el.remove();
-                                                }
-                                            }
-                                        });
-                                    });
-
-                                    // Kill fixed-position elements at bottom-right (chat dock area)
-                                    var divs = document.getElementsByTagName('div');
-                                    var wh = window.innerHeight;
-                                    var ww = window.innerWidth;
-                                    for (var i = 0; i < divs.length; i++) {
-                                        var el = divs[i];
-                                        if (el.style.display === 'none') continue;
-                                        var cs = window.getComputedStyle(el);
-                                        if (cs.position !== 'fixed') continue;
-                                        var rect = el.getBoundingClientRect();
-                                        if (rect.bottom > wh - 50 && rect.right > ww - 500 && rect.height < 600 && rect.width < 500) {
-                                            var hasChat = el.querySelector('[contenteditable], textarea, input, [aria-label*="chat"], [aria-label*="Chat"], [aria-label*="message"], [aria-label*="Message"]');
-                                            if (hasChat) {
-                                                el.style.display = 'none';
-                                                el.remove();
-                                            }
-                                        }
-                                    }
-                                }
-                                // Run immediately and then periodically
-                                killChats();
-                                setInterval(killChats, 2000);
-                            })();
-                        `;
-                        el.executeJavaScript(chatKillerScript);
-                    } catch (e) { }
                 }
+
+                // Saved pages can fully reload without React remounting the webview.
+                // Reapply the helper whenever that guest document becomes ready.
+                if (tab.type === 'saved') {
+                    const script = settingsRef.current.unsaveButton
+                        ? UNSAVE_INJECTION_SCRIPT
+                        : UNSAVE_CLEANUP_SCRIPT
+                    el.executeJavaScript(script).catch(() => {})
+                }
+            }
+
+            const handleDidFinishLoad = () => {
+                clearTabProblem(tab.id)
+            }
+
+            const handleDidFailLoad = (event: any) => {
+                // -3 is Chromium's ERR_ABORTED and is expected during redirects or
+                // deliberate navigation. Subframe failures should not replace the app.
+                if (event.isMainFrame === false || event.errorCode === -3) return
+
+                const offline = !onlineRef.current
+                setTabProblem(tab.id, {
+                    kind: 'load-failed',
+                    title: offline ? 'You’re offline' : 'Couldn’t load Facebook',
+                    message: offline
+                        ? 'Your conversations are safe. We’ll reconnect when the network returns.'
+                        : 'The page did not finish loading. We’ll retry automatically.'
+                })
+                scheduleTabRecovery(tab.id)
+            }
+
+            const handleRenderProcessGone = () => {
+                setTabProblem(tab.id, {
+                    kind: 'crashed',
+                    title: 'This tab needs a restart',
+                    message: 'Facebook stopped responding. We’ll restore the tab without restarting the app.'
+                })
+                scheduleTabRecovery(tab.id)
             }
 
             const handleIpcMessage = (e: any) => {
@@ -647,7 +1172,7 @@ function App(): React.ReactElement {
                         )
                         logNotif('allowed', 'Title-detected (pre-validated)', 'Fast-pass')
 
-                        showToast(title, options.body, options.icon || undefined)
+                        showToast(title, options.body, options.icon || undefined, sourceUrl)
                         setHasUnread(true)
 
                         // Update dock badge with notification-based unread count
@@ -657,7 +1182,8 @@ function App(): React.ReactElement {
                         window.electron.ipcRenderer.send('show-notification', {
                             title,
                             body: options.body,
-                            icon: options.icon || undefined
+                            icon: options.icon || undefined,
+                            sourceUrl
                         })
                         return
                     }
@@ -870,7 +1396,7 @@ function App(): React.ReactElement {
                     logNotif('allowed', allowReason, 'All layers passed')
 
                     // Show in-app toast notification (always works, no OS dependency)
-                    showToast(title, options.body, options.icon || undefined)
+                    showToast(title, options.body, options.icon || undefined, sourceUrl)
 
                     // Set unread indicator on messenger icon and dock badge
                     setHasUnread(true)
@@ -880,7 +1406,8 @@ function App(): React.ReactElement {
                     window.electron.ipcRenderer.send('show-notification', {
                         title,
                         body: options.body,
-                        icon: options.icon || undefined
+                        icon: options.icon || undefined,
+                        sourceUrl
                     })
                 } else if (e.channel === 'unread-count') {
                     const count = e.args[0]
@@ -924,159 +1451,70 @@ function App(): React.ReactElement {
             el.addEventListener('new-window', handleNewWindow)
             el.addEventListener('will-navigate', handleWillNavigate)
             el.addEventListener('dom-ready', handleDomReady)
+            el.addEventListener('did-finish-load', handleDidFinishLoad)
             el.addEventListener('ipc-message', handleIpcMessage)
-            handlersRef.current.set(tab.id, { newWindow: handleNewWindow, willNavigate: handleWillNavigate, domReady: handleDomReady, ipcMessage: handleIpcMessage })
+            el.addEventListener('did-fail-load', handleDidFailLoad)
+            el.addEventListener('render-process-gone', handleRenderProcessGone)
+            handlersRef.current.set(tab.id, {
+                newWindow: handleNewWindow,
+                willNavigate: handleWillNavigate,
+                domReady: handleDomReady,
+                didFinishLoad: handleDidFinishLoad,
+                ipcMessage: handleIpcMessage,
+                didFailLoad: handleDidFailLoad,
+                renderProcessGone: handleRenderProcessGone
+            })
         })
 
-        // Cleanup: remove handlers for tabs that no longer exist
-        return () => {
-            const currentTabIds = new Set(tabs.map(t => t.id))
-            handlersRef.current.forEach((handlers, tabId) => {
-                if (!currentTabIds.has(tabId)) {
-                    const el = webviewRefs.current[tabId]
-                    if (el) {
-                        el.removeEventListener('new-window', handlers.newWindow)
-                        el.removeEventListener('will-navigate', handlers.willNavigate)
-                        el.removeEventListener('dom-ready', handlers.domReady)
-                        el.removeEventListener('ipc-message', handlers.ipcMessage)
-                    }
-                    handlersRef.current.delete(tabId)
+        // Drop references for removed tabs immediately. Existing tabs have their
+        // prior handlers replaced at the start of this effect.
+        const currentTabIds = new Set(tabs.map(t => t.id))
+        handlersRef.current.forEach((handlers, tabId) => {
+            if (!currentTabIds.has(tabId)) {
+                const el = webviewRefs.current[tabId]
+                if (el) {
+                    el.removeEventListener('new-window', handlers.newWindow)
+                    el.removeEventListener('will-navigate', handlers.willNavigate)
+                    el.removeEventListener('dom-ready', handlers.domReady)
+                    el.removeEventListener('did-finish-load', handlers.didFinishLoad)
+                    el.removeEventListener('ipc-message', handlers.ipcMessage)
+                    el.removeEventListener('did-fail-load', handlers.didFailLoad)
+                    el.removeEventListener('render-process-gone', handlers.renderProcessGone)
                 }
-            })
-        }
-    }, [tabs, webviewPreloadPath])
+                clearTabProblem(tabId)
+                delete webviewRefs.current[tabId]
+                handlersRef.current.delete(tabId)
+            }
+        })
+    }, [webviewLifecycleKey, webviewPreloadPath])
 
     // Automated Unsave Injection for Saved Tab
     useEffect(() => {
-        if (!appSettings.unsaveButton) return
+        const el = webviewRefs.current['saved']
+        if (!el) return
 
-        const el = webviewRefs.current['saved'];
-
-        // Hide Chat Dock on Saved Page
-        if (el && activeTabId === 'saved') {
-            try { el.insertCSS(facebookChromeCSS); } catch (e) { }
-
-            const injectUnsave = `
-            (function() {
-                // We use a recurring check because MutationObserver sometimes misses deep nested changes 
-                // effectively or the page re-renders significantly.
-                // But we still use observer for efficiency, supplemented by interval.
-                
-                const injectButtons = () => {
-                     // Target only the main content area to avoid sidebar clutter
-                     const mainContent = document.querySelector('[role="main"]');
-                     if (!mainContent) return;
-
-                     // Look for the "More" buttons (three dots) specifically within saved item cards
-                     // We try to be specific to the "Saved items" list to avoid navigation/header buttons
-                     const candidates = Array.from(mainContent.querySelectorAll('[aria-label="Collection options"], [aria-label="More"], [aria-label="Actions needed"]'));
-                     
-                     candidates.forEach(trigger => {
-                        // 1. Avoid Header/Navigation buttons
-                        if (trigger.closest('[role="banner"]') || trigger.closest('[role="navigation"]')) return;
-                        
-                        // 2. Specific check: Is this likely a Saved Item card?
-                        // Saved items usually have an image and description nearby.
-                        // We filter out the "My collections" sidebar list by checking container width or context
-                        const card = trigger.closest('[role="article"]') || trigger.closest('div[style*="border-radius"]');
-                        if (!card) return;
-                        
-                        // Heuristic: Sidebar items are usually small/narrow. Main feed items are wider.
-                        // This prevents buttons appearing on the left sidebar "My collections" list
-                        if (card.clientWidth < 300) return; 
-
-                        // 3. Find the container to inject into (the "More" button's wrapper)
-                        const container = trigger.parentElement;
-                        if (!container || container.querySelector('.custom-unsave-btn')) return;
-                        
-                        // 4. Create and Style Button
-                        // We place it to the LEFT of the three dots to avoid covering content
-                        const btn = document.createElement('button');
-                        btn.innerText = 'Unsave';
-                        btn.className = 'custom-unsave-btn';
-                        Object.assign(btn.style, {
-                           // Position relative to the button wrapper
-                           position: 'absolute', 
-                           right: '100%', // Push to the left of the container
-                           top: '50%',
-                           transform: 'translateY(-50%)', // Vertically center
-                           marginRight: '8px',
-                           zIndex: '999',
-                           whiteSpace: 'nowrap',
-                           backgroundColor: '#DC2626', 
-                           color: 'white', 
-                           border: '1px solid rgba(255,255,255,0.2)', 
-                           borderRadius: '6px',
-                           padding: '6px 10px', 
-                           fontSize: '13px', 
-                           cursor: 'pointer', 
-                           fontWeight: '600',
-                           boxShadow: '0 2px 4px rgba(0,0,0,0.15)'
-                        });
-
-                        // Ensure parent is relative for absolute positioning
-                        if (getComputedStyle(container).position === 'static') {
-                            container.style.position = 'relative';
-                            // Allow button to overflow out of the small button wrapper
-                            container.style.overflow = 'visible'; 
-                        }
-                        
-                        btn.onclick = async (e) => {
-                            e.preventDefault(); e.stopPropagation();
-                            btn.innerText = '...';
-                            try {
-                                trigger.click();
-                                await new Promise(r => setTimeout(r, 500));
-                                
-                                // Menu items
-                                const menuItems = Array.from(document.querySelectorAll('[role="menuitem"], [role="option"], div[role="button"]'));
-                                const unsaveOption = menuItems.find(el => {
-                                    const t = el.innerText.toLowerCase();
-                                    return t.includes('unsave') || t.includes('remove') || t.includes('delete');
-                                });
-                                
-                                if(unsaveOption) {
-                                    unsaveOption.click();
-                                    btn.innerText = 'Done';
-                                    btn.style.backgroundColor = 'green';
-                                    if(card) {
-                                       card.style.opacity = '0.3';
-                                       card.style.pointerEvents = 'none';
-                                       card.style.transition = 'opacity 0.3s';
-                                    }
-                                } else {
-                                     trigger.click(); // close menu
-                                     btn.innerText = '?';
-                                }
-                            } catch(err) {
-                                btn.innerText = 'Err';
-                            }
-                        };
-                        
-                        container.appendChild(btn);
-                     });
-                };
-
-                // Run frequently
-                setInterval(injectButtons, 2000);
-                injectButtons();
-            })();
-            `;
-            try {
-                el.executeJavaScript(injectUnsave);
-            } catch (e) { }
+        if (!appSettings.unsaveButton) {
+            el.executeJavaScript(UNSAVE_CLEANUP_SCRIPT).catch(() => {})
+            return
         }
-    }, [activeTabId, webviewRefs.current['saved']])
+
+        if (activeTabId === 'saved') {
+            try { el.insertCSS(facebookChromeCSS); } catch (e) { }
+            el.executeJavaScript(UNSAVE_INJECTION_SCRIPT).catch(() => {})
+        }
+    }, [activeTabId, appSettings.unsaveButton, webviewLifecycleKey])
+
+    const activeProblem = tabProblems[activeTabId]
 
     return (
         <div className="app-container">
             <aside className="sidebar">
                 <div className="sidebar-drag-region"></div>
-                <nav>
+                <nav aria-label="App navigation">
                     {/* Persistent Back Button Area */}
                     <div className="nav-item-wrapper">
                         <button
-                            className="nav-btn"
+                            className="nav-btn nav-btn-back"
                             onClick={() => {
                                 const wv = webviewRefs.current[activeTabId]
                                 const activeTab = tabs.find(t => t.id === activeTabId)
@@ -1091,17 +1529,21 @@ function App(): React.ReactElement {
                                 if (activeTab?.type === 'marketplace-item') {
                                     setTabs(prev => prev.filter(t => t.id !== activeTabId))
                                     delete unreadCountsRef.current[activeTabId]
+                                    clearTabProblem(activeTabId)
                                     handleTabSwitch('marketplace')
                                 }
                             }}
-                            title="Go Back"
+                            aria-label="Go back"
                             style={{
                                 visibility: activeTabId !== 'messenger' ? 'visible' : 'hidden'
                             }}
                         >
-                            ◀
+                            <NavIcon kind="back" />
+                            <span className="nav-tooltip">Go back</span>
                         </button>
                     </div>
+
+                    <div className="nav-divider" aria-hidden="true" />
 
                     {tabs.map(tab => (
                         <div key={tab.id} className="nav-item-wrapper">
@@ -1116,32 +1558,50 @@ function App(): React.ReactElement {
                                         updateAggregatedUnreadCount()
                                     }
                                 }}
-                                title={tab.type}
+                                aria-label={getTabLabel(tab)}
+                                aria-current={activeTabId === tab.id ? 'page' : undefined}
                             >
-                                {tab.icon}
+                                <NavIcon kind={tab.type} />
+                                <span className="nav-tooltip">{getTabLabel(tab)}</span>
                                 {tab.id === 'messenger' && hasUnread && (
                                     <span className="nav-unread-badge" />
                                 )}
                             </button>
                             {tab.type === 'marketplace-item' && (
-                                <div
+                                <button
+                                    type="button"
                                     className="close-btn"
                                     onClick={(e) => closeTab(e, tab.id)}
-                                >×</div>
+                                    aria-label={`Close ${getTabLabel(tab)}`}
+                                >×</button>
                             )}
                         </div>
                     ))}
 
                     <div className="spacer" style={{ flex: 1 }}></div>
 
+                    {!isOnline && (
+                        <div className="nav-item-wrapper">
+                            <div className="connection-indicator" role="status" aria-label="Offline — waiting to reconnect">
+                                <span className="connection-indicator-dot" aria-hidden="true" />
+                                <span className="nav-tooltip">Offline — waiting to reconnect</span>
+                            </div>
+                        </div>
+                    )}
+
                     {/* Notification log button */}
                     <div className="nav-item-wrapper">
                         <button
                             className={`nav-btn ${showNotifLog ? 'active' : ''}`}
-                            onClick={() => setShowNotifLog(!showNotifLog)}
-                            title="Notification Log"
+                            onClick={() => {
+                                setShowNotifLog(!showNotifLog)
+                                setShowSettings(false)
+                            }}
+                            aria-label="Notification log"
+                            aria-pressed={showNotifLog}
                         >
-                            🔔
+                            <NavIcon kind="notifications" />
+                            <span className="nav-tooltip">Notification log</span>
                         </button>
                     </div>
 
@@ -1149,10 +1609,15 @@ function App(): React.ReactElement {
                     <div className="nav-item-wrapper">
                         <button
                             className={`nav-btn ${showSettings ? 'active' : ''}`}
-                            onClick={() => setShowSettings(!showSettings)}
-                            title="Settings"
+                            onClick={() => {
+                                setShowSettings(!showSettings)
+                                setShowNotifLog(false)
+                            }}
+                            aria-label="Settings"
+                            aria-pressed={showSettings}
                         >
-                            ⚙️
+                            <NavIcon kind="settings" />
+                            <span className="nav-tooltip">Settings</span>
                         </button>
                     </div>
                 </nav>
@@ -1162,16 +1627,34 @@ function App(): React.ReactElement {
                 {toasts.length > 0 && (
                     <div className="toast-container">
                         {toasts.map(toast => (
-                            <div key={toast.id} className="toast-notification" onClick={() => {
-                                dismissToast(toast.id)
-                                handleTabSwitch('messenger')
-                                setHasUnread(false)
-                            }}>
+                            <div
+                                key={toast.id}
+                                className="toast-notification"
+                                role="button"
+                                tabIndex={0}
+                                onClick={() => {
+                                    dismissToast(toast.id)
+                                    openMessengerDestination(toast.sourceUrl)
+                                    setHasUnread(false)
+                                    notifUnreadRef.current = 0
+                                    updateAggregatedUnreadCount()
+                                }}
+                                onKeyDown={(event) => {
+                                    if (event.key === 'Enter' || event.key === ' ') {
+                                        event.preventDefault()
+                                        dismissToast(toast.id)
+                                        openMessengerDestination(toast.sourceUrl)
+                                        setHasUnread(false)
+                                        notifUnreadRef.current = 0
+                                        updateAggregatedUnreadCount()
+                                    }
+                                }}
+                            >
                                 <div className="toast-icon-area">
                                     {toast.icon ? (
                                         <img src={toast.icon} className="toast-avatar" alt="" />
                                     ) : (
-                                        <span className="toast-icon-fallback">💬</span>
+                                        <span className="toast-icon-fallback"><NavIcon kind="messenger" /></span>
                                     )}
                                 </div>
                                 <div className="toast-content">
@@ -1181,7 +1664,7 @@ function App(): React.ReactElement {
                                 <button className="toast-dismiss" onClick={(e) => {
                                     e.stopPropagation()
                                     dismissToast(toast.id)
-                                }}>×</button>
+                                }} aria-label="Dismiss notification">×</button>
                             </div>
                         ))}
                     </div>
@@ -1353,9 +1836,40 @@ function App(): React.ReactElement {
                         </div>
                     </div>
                 )}
+                {webviewPreloadPath && activeProblem && !showSettings && !showNotifLog && !zoomGallery && (
+                    <div className="recovery-view" role="alert" aria-live="polite">
+                        <div className={`recovery-mark ${activeProblem.kind}`} aria-hidden="true">
+                            <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M20 11a8 8 0 1 0-2.35 5.65" />
+                                <path d="M20 4v7h-7" />
+                            </svg>
+                        </div>
+                        <div className="recovery-copy">
+                            <span className={`recovery-status ${isOnline ? 'online' : 'offline'}`}>
+                                <span aria-hidden="true" />
+                                {isOnline ? 'Recovering connection' : 'No internet connection'}
+                            </span>
+                            <h2>{activeProblem.title}</h2>
+                            <p>{activeProblem.message}</p>
+                        </div>
+                        <button
+                            type="button"
+                            className="recovery-button"
+                            onClick={() => retryTab(activeTabId)}
+                            disabled={!isOnline}
+                        >
+                            {isOnline ? 'Try again' : 'Waiting for network'}
+                        </button>
+                    </div>
+                )}
                 {!webviewPreloadPath ? (
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'white' }}>
-                        Loading...
+                    <div className="app-loading" role="status" aria-live="polite">
+                        <div className="app-loading-mark"><NavIcon kind="messenger" /></div>
+                        <div className="app-loading-copy">
+                            <strong>FB Missing Messenger</strong>
+                            <span>Getting your conversations ready…</span>
+                        </div>
+                        <span className="app-loading-spinner" aria-hidden="true" />
                     </div>
                 ) : (
                     tabs.map(tab => (
@@ -1364,7 +1878,11 @@ function App(): React.ReactElement {
                                 key={tab.id}
                                 ref={el => { webviewRefs.current[tab.id] = el }}
                                 src={tab.url}
-                                className={`webview ${activeTabId === tab.id ? 'visible' : 'hidden'}`}
+                                className={`webview ${
+                                    activeTabId === tab.id && !showSettings && !showNotifLog && !zoomGallery && !activeProblem
+                                        ? 'visible'
+                                        : 'hidden'
+                                } ${showSettings || showNotifLog || zoomGallery || (activeTabId === tab.id && activeProblem) ? 'overlay-hidden' : ''}`}
                                 useragent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
                                 allowpopups={true}
                                 preload={webviewPreloadPath}

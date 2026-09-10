@@ -223,6 +223,9 @@ nav {
 }
 
 .webview {
+  position: absolute;
+  inset: 0;
+  display: flex;
   width: 100%;
   height: 100%;
   border: none;
@@ -230,13 +233,9 @@ nav {
 }
 
 .webview.hidden {
-  position: fixed;
-  top: -9999px;
-  left: -9999px;
-  width: 1px;
-  height: 1px;
   visibility: hidden;
   pointer-events: none;
+  z-index: 0;
 }
 
 .webview.overlay-hidden {
@@ -244,18 +243,9 @@ nav {
 }
 
 .webview.visible {
-  display: flex;
-  flex: 1;
   visibility: visible;
-  position: relative;
-  width: 100%;
-  height: 100%;
-  animation: webviewReveal 180ms ease-out;
-}
-
-@keyframes webviewReveal {
-  from { opacity: 0.72; }
-  to { opacity: 1; }
+  pointer-events: auto;
+  z-index: 1;
 }
 
 .close-btn {

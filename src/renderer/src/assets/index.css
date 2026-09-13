@@ -45,6 +45,16 @@ button:focus-visible,
   width: 100vw;
 }
 
+.window-drag-region {
+  position: fixed;
+  top: 0;
+  right: 0;
+  left: var(--sidebar-width);
+  z-index: 90;
+  height: 56px;
+  -webkit-app-region: drag;
+}
+
 .sidebar {
   position: relative;
   width: var(--sidebar-width);
@@ -61,15 +71,7 @@ button:focus-visible,
   z-index: 100;
   gap: 2px;
   box-shadow: 10px 0 35px rgba(0, 0, 0, 0.12);
-}
-
-.sidebar-drag-region {
-  height: 40px;
-  width: 100%;
   -webkit-app-region: drag;
-  position: absolute;
-  top: 0;
-  left: 0;
 }
 
 nav {
@@ -110,6 +112,9 @@ nav {
   color: var(--fb-text);
   padding: 0;
   margin: 0;
+}
+
+.sidebar button {
   -webkit-app-region: no-drag;
 }
 

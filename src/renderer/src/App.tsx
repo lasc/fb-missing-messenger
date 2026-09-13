@@ -1508,8 +1508,8 @@ function App(): React.ReactElement {
 
     return (
         <div className="app-container">
+            <div className="window-drag-region" aria-hidden="true" />
             <aside className="sidebar">
-                <div className="sidebar-drag-region"></div>
                 <nav aria-label="App navigation">
                     {/* Persistent Back Button Area */}
                     <div className="nav-item-wrapper">
